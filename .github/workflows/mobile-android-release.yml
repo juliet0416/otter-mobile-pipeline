@@ -18,6 +18,7 @@ on:
           - internal
           - external
           - production
+          - cn
       artifact_type:
         description: 'Android artifact type'
         required: true
@@ -34,6 +35,11 @@ on:
         required: false
       submit:
         description: 'Upload AAB to Google Play'
+        required: true
+        default: false
+        type: boolean
+      clear_cache:
+        description: 'Ignore existing Gradle cache and write a fresh cache'
         required: true
         default: false
         type: boolean
@@ -58,6 +64,7 @@ env:
   MOBILE_ARTIFACT_TYPE: ${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }}
   MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
   MOBILE_BUILD_NUMBER: ${{ github.event.client_payload.build_number || inputs.build_number }}
+  CLEAR_CACHE: ${{ github.event.client_payload.clear_cache || inputs.clear_cache }}
   SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
 
@@ -74,6 +81,9 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       android_track: ${{ steps.resolve.outputs.android_track }}
       android_release_status: ${{ steps.resolve.outputs.android_release_status }}
+      expo_public_region: ${{ steps.resolve.outputs.expo_public_region }}
+      expo_public_api_base_url: ${{ steps.resolve.outputs.expo_public_api_base_url }}
+      clear_cache: ${{ steps.resolve.outputs.clear_cache }}
       submit_to_store: ${{ steps.resolve.outputs.submit_to_store }}
       upload_private_release: ${{ steps.resolve.outputs.upload_private_release }}
       artifact_type: ${{ steps.resolve.outputs.artifact_type }}
@@ -92,6 +102,8 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      artifact_name: ${{ needs.prepare.outputs.artifact_name }}
     steps:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
@@ -128,6 +140,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          cache-write-only: ${{ needs.prepare.outputs.clear_cache == 'true' }}
+          cache-cleanup: on-success
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -187,6 +206,8 @@ jobs:
           EXPO_NO_DOTENV: '1'
           EXPO_PUBLIC_APP_CHANNEL: production
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
+          EXPO_PUBLIC_REGION: ${{ needs.prepare.outputs.expo_public_region }}
+          EXPO_PUBLIC_API_BASE_URL: ${{ needs.prepare.outputs.expo_public_api_base_url }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: bunx expo prebuild --platform android --clean --no-install
 
@@ -227,6 +248,8 @@ jobs:
           EXPO_NO_DOTENV: '1'
           EXPO_PUBLIC_APP_CHANNEL: production
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
+          EXPO_PUBLIC_REGION: ${{ needs.prepare.outputs.expo_public_region }}
+          EXPO_PUBLIC_API_BASE_URL: ${{ needs.prepare.outputs.expo_public_api_base_url }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_FILE: ci-upload.keystore
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -272,15 +295,48 @@ jobs:
             -R "${{ env.SOURCE_REPO }}" \
             --clobber
 
-      - name: Setup Ruby for Fastlane
+      - name: Upload Android artifact for submit job
         if: needs.prepare.outputs.submit_to_store == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact_name }}
+          path: ${{ steps.collect.outputs.artifact_path }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Cleanup secret files
+        if: always()
+        run: |
+          rm -rf .private
+          rm -f source/apps/mobile/android/app/ci-upload.keystore
+          rm -f source/apps/mobile/android/app/google-services.json
+          rm -f source/apps/mobile/secrets/google-services-prod.json
+
+  submit:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.submit_to_store == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: mobile-android-google-play-submit
+      cancel-in-progress: false
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Download Android artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact_name }}
+          path: .private/artifacts
+
+      - name: Setup Ruby for Fastlane
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
           bundler-cache: true
 
       - name: Restore Google Play service account
-        if: needs.prepare.outputs.submit_to_store == 'true'
         shell: bash
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 }}
@@ -295,10 +351,9 @@ jobs:
           printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64" | base64 --decode > .private/google-play-service-account.json
 
       - name: Upload AAB to Google Play
-        if: needs.prepare.outputs.submit_to_store == 'true'
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_PATH: ${{ github.workspace }}/.private/google-play-service-account.json
-          ANDROID_AAB_PATH: ${{ github.workspace }}/${{ steps.collect.outputs.artifact_path }}
+          ANDROID_AAB_PATH: ${{ github.workspace }}/.private/artifacts/${{ needs.prepare.outputs.artifact_name }}
           ANDROID_PACKAGE_NAME: ${{ secrets.ANDROID_PACKAGE_NAME }}
           ANDROID_PLAY_TRACK: ${{ needs.prepare.outputs.android_track }}
           ANDROID_RELEASE_STATUS: ${{ needs.prepare.outputs.android_release_status }}
@@ -308,6 +363,3 @@ jobs:
         if: always()
         run: |
           rm -rf .private
-          rm -f source/apps/mobile/android/app/ci-upload.keystore
-          rm -f source/apps/mobile/android/app/google-services.json
-          rm -f source/apps/mobile/secrets/google-services-prod.json

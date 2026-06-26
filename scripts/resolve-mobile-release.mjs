@@ -21,6 +21,14 @@ const targetConfig = {
     androidReleaseStatus: 'draft',
     prerelease: 'false',
   },
+  cn: {
+    releaseEnv: 'production',
+    androidTrack: 'internal',
+    androidReleaseStatus: 'completed',
+    prerelease: 'true',
+    region: 'cn',
+    apiBaseUrl: 'https://api.ottermind.cn/',
+  },
 };
 
 const artifactConfig = {
@@ -95,13 +103,16 @@ if (!sourceRef) {
 const target = readEnv('MOBILE_TARGET', 'internal');
 const config = targetConfig[target];
 if (!config) {
-  fail(`unknown target "${target}". Use internal, external, or production.`);
+  fail(`unknown target "${target}". Use internal, external, production, or cn.`);
 }
 
 const artifactType = readEnv('MOBILE_ARTIFACT_TYPE', 'aab');
 const artifact = artifactConfig[artifactType];
 if (!artifact) {
   fail(`unknown artifact_type "${artifactType}". Use aab or apk.`);
+}
+if (target === 'cn' && artifactType !== 'apk') {
+  fail('target "cn" only supports artifact_type "apk".');
 }
 
 const version = parseVersion(sourceRef, readEnv('MOBILE_VERSION'));
@@ -110,7 +121,11 @@ const buildNumber = parseBuildNumber(
   readEnv('GITHUB_RUN_NUMBER', '1'),
 );
 const safeRef = sourceRef.replace(/^refs\/tags\//, '').replace(/[^A-Za-z0-9._-]+/g, '-');
+const clearCache = readBooleanEnv('CLEAR_CACHE', false);
 const submitToStore = readBooleanEnv('SUBMIT_TO_STORE', false);
+if (submitToStore && artifactType !== 'aab') {
+  fail('submit_to_store requires artifact_type "aab".');
+}
 const uploadPrivateRelease = readBooleanEnv('UPLOAD_PRIVATE_RELEASE', true);
 
 writeOutputs({
@@ -123,6 +138,9 @@ writeOutputs({
   prerelease: config.prerelease,
   android_track: readEnv('ANDROID_PLAY_TRACK', config.androidTrack),
   android_release_status: readEnv('ANDROID_RELEASE_STATUS', config.androidReleaseStatus),
+  expo_public_region: config.region ?? '',
+  expo_public_api_base_url: config.apiBaseUrl ?? '',
+  clear_cache: String(clearCache),
   submit_to_store: String(submitToStore),
   upload_private_release: String(uploadPrivateRelease),
   artifact_type: artifactType,
