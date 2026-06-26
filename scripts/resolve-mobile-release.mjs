@@ -62,7 +62,7 @@ function parseVersion(ref, explicitVersion) {
     return explicitVersion;
   }
 
-  const match = ref.match(/(?:mobile-)?v?(\d+\.\d+\.\d+)(?:[-+].*)?$/);
+  const match = ref.match(/^(?:refs\/tags\/)?mobile-v(\d+\.\d+\.\d+)$/);
   if (!match) {
     fail(`cannot infer semver from ref "${ref}". Pass version explicitly.`);
   }

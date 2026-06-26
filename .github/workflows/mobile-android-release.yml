@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Source repo ref/tag to build, e.g. mobile-v1.0.3-test'
+        description: 'Source repo ref/tag to build, e.g. mobile-v1.0.3'
         required: true
       target:
         description: 'Release target'
