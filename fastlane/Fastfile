@@ -1,0 +1,104 @@
+default_platform(:android)
+
+def require_env!(name)
+  value = ENV[name]
+  UI.user_error!("Missing required env: #{name}") if value.nil? || value.empty?
+  value
+end
+
+platform :android do
+  desc "Upload the generated Android App Bundle to Google Play"
+  lane :upload_play do
+    upload_to_play_store(
+      json_key: require_env!("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_PATH"),
+      package_name: require_env!("ANDROID_PACKAGE_NAME"),
+      track: require_env!("ANDROID_PLAY_TRACK"),
+      aab: require_env!("ANDROID_AAB_PATH"),
+      release_status: ENV.fetch("ANDROID_RELEASE_STATUS", "draft"),
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      changes_not_sent_for_review: ENV.fetch("ANDROID_CHANGES_NOT_SENT_FOR_REVIEW", "false") == "true"
+    )
+  end
+end
+
+platform :ios do
+  desc "Build a signed iOS IPA from the checked-out mobile app"
+  lane :build_ipa do
+    app_root = require_env!("MOBILE_APP_ROOT")
+    ios_dir = File.join(app_root, "ios")
+    project_name = require_env!("IOS_PROJECT_NAME")
+    scheme = require_env!("IOS_SCHEME")
+    app_target = require_env!("IOS_APP_TARGET")
+    widget_target = ENV["IOS_WIDGET_TARGET"]
+    app_bundle_id = require_env!("IOS_APP_BUNDLE_ID")
+    widget_bundle_id = ENV["IOS_WIDGET_BUNDLE_ID"]
+    project_path = File.join(ios_dir, "#{project_name}.xcodeproj")
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      path: project_path,
+      team_id: require_env!("APPLE_TEAM_ID"),
+      targets: [app_target],
+      profile_name: require_env!("IOS_PROFILE_APP_NAME"),
+      code_sign_identity: "Apple Distribution"
+    )
+
+    provisioning_profiles = {
+      app_bundle_id => require_env!("IOS_PROFILE_APP_NAME")
+    }
+
+    if widget_target && !widget_target.empty?
+      UI.user_error!("Missing required env: IOS_WIDGET_BUNDLE_ID") if widget_bundle_id.nil? || widget_bundle_id.empty?
+      provisioning_profiles[widget_bundle_id] = require_env!("IOS_PROFILE_WIDGET_NAME")
+      update_code_signing_settings(
+        use_automatic_signing: false,
+        path: project_path,
+        team_id: require_env!("APPLE_TEAM_ID"),
+        targets: [widget_target],
+        profile_name: require_env!("IOS_PROFILE_WIDGET_NAME"),
+        code_sign_identity: "Apple Distribution"
+      )
+    end
+
+    build_app(
+      workspace: File.join(ios_dir, "#{project_name}.xcworkspace"),
+      scheme: scheme,
+      configuration: "Release",
+      clean: true,
+      output_directory: require_env!("IOS_OUTPUT_DIR"),
+      output_name: require_env!("IOS_OUTPUT_NAME"),
+      archive_path: File.join(require_env!("IOS_OUTPUT_DIR"), "#{scheme}.xcarchive"),
+      export_method: "app-store",
+      export_team_id: require_env!("APPLE_TEAM_ID"),
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: provisioning_profiles
+      },
+      xcargs: "DEVELOPMENT_TEAM=#{require_env!("APPLE_TEAM_ID")} CODE_SIGN_STYLE=Manual"
+    )
+  end
+
+  desc "Upload the generated IPA to App Store Connect / TestFlight"
+  lane :upload_testflight do
+    api_key = app_store_connect_api_key(
+      key_id: require_env!("ASC_KEY_ID"),
+      issuer_id: require_env!("ASC_ISSUER_ID"),
+      key_filepath: require_env!("ASC_API_KEY_PATH"),
+      duration: 1200,
+      in_house: false
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      ipa: require_env!("IOS_IPA_PATH"),
+      app_identifier: require_env!("IOS_APP_BUNDLE_ID"),
+      changelog: ENV["IOS_TESTFLIGHT_CHANGELOG"],
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+end

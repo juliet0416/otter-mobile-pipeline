@@ -1,0 +1,220 @@
+name: Mobile iOS Release
+run-name: iOS ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'internal' }})
+
+on:
+  repository_dispatch:
+    types: [mobile-ios-release]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Source repo ref/tag to build, e.g. mobile-v1.0.3-test'
+        required: true
+      target:
+        description: 'Release target'
+        required: true
+        default: internal
+        type: choice
+        options:
+          - internal
+          - external
+          - production
+      version:
+        description: 'Optional semver override, e.g. 1.0.3'
+        required: false
+      build_number:
+        description: 'Optional CFBundleVersion override. Must be higher than the last ASC upload.'
+        required: false
+      submit:
+        description: 'Upload IPA to App Store Connect/TestFlight'
+        required: true
+        default: false
+        type: boolean
+      upload_private_release:
+        description: 'Upload IPA to the source repo GitHub Release'
+        required: true
+        default: true
+        type: boolean
+      what_to_test:
+        description: 'TestFlight What to Test notes'
+        required: false
+        default: 'Mobile app build'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-ios-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
+  MOBILE_ARTIFACT_PREFIX: ${{ secrets.MOBILE_ARTIFACT_PREFIX }}
+  MOBILE_SOURCE_REF: ${{ github.event.client_payload.ref || github.event.client_payload.tag || inputs.ref }}
+  MOBILE_TARGET: ${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  MOBILE_ARTIFACT_TYPE: aab
+  MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
+  MOBILE_BUILD_NUMBER: ${{ github.event.client_payload.build_number || inputs.build_number }}
+  SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
+  UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
+  IOS_TESTFLIGHT_CHANGELOG: ${{ github.event.client_payload.what_to_test || inputs.what_to_test || 'Mobile app build' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      safe_ref: ${{ steps.resolve.outputs.safe_ref }}
+      target: ${{ steps.resolve.outputs.target }}
+      version: ${{ steps.resolve.outputs.version }}
+      build_number: ${{ steps.resolve.outputs.build_number }}
+      release_env: ${{ steps.resolve.outputs.release_env }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      submit_to_store: ${{ steps.resolve.outputs.submit_to_store }}
+      upload_private_release: ${{ steps.resolve.outputs.upload_private_release }}
+      artifact_name: ${{ steps.resolve.outputs.ios_artifact_name }}
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Resolve release inputs
+        id: resolve
+        run: node scripts/resolve-mobile-release.mjs
+
+  build:
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Validate source repo configuration
+        env:
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_REPO" || (echo "SOURCE_REPO secret is required" >&2; exit 1)
+          test -n "$SOURCE_REPO_PAT" || (echo "SOURCE_REPO_PAT secret is required" >&2; exit 1)
+
+      - name: Checkout source app
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.6'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Ruby for Fastlane
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Print Xcode version
+        run: xcodebuild -version
+
+      - name: Install JS dependencies
+        working-directory: source
+        run: bun install --frozen-lockfile
+
+      - name: Install iOS signing files
+        id: signing
+        env:
+          IOS_DISTRIBUTION_CERT_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERT_BASE64 }}
+          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
+          IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+          IOS_PROFILE_APP_BASE64: ${{ secrets.IOS_PROFILE_APP_BASE64 }}
+          IOS_PROFILE_WIDGET_BASE64: ${{ secrets.IOS_PROFILE_WIDGET_BASE64 }}
+        run: bash scripts/install-ios-signing.sh
+
+      - name: Restore App Store Connect API key
+        shell: bash
+        env:
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_API_KEY_P8_BASE64" || (echo "ASC_API_KEY_P8_BASE64 is required" >&2; exit 1)
+          test -n "$ASC_KEY_ID" || (echo "ASC_KEY_ID is required" >&2; exit 1)
+          mkdir -p .private
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 --decode > ".private/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Update app version and iOS build number
+        working-directory: source/apps/mobile
+        run: |
+          bun run version:update -- "${{ needs.prepare.outputs.version }}" \
+            --ios-build "${{ needs.prepare.outputs.build_number }}"
+
+      - name: Install CocoaPods dependencies
+        working-directory: source/apps/mobile/ios
+        run: pod install
+
+      - name: Build signed IPA
+        env:
+          MOBILE_APP_ROOT: ${{ github.workspace }}/source/apps/mobile
+          IOS_OUTPUT_DIR: ${{ github.workspace }}/.private/artifacts
+          IOS_OUTPUT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          IOS_PROFILE_APP_NAME: ${{ steps.signing.outputs.app_name }}
+          IOS_PROFILE_WIDGET_NAME: ${{ steps.signing.outputs.widget_name }}
+          IOS_PROJECT_NAME: ${{ secrets.IOS_PROJECT_NAME }}
+          IOS_SCHEME: ${{ secrets.IOS_SCHEME }}
+          IOS_APP_TARGET: ${{ secrets.IOS_APP_TARGET }}
+          IOS_WIDGET_TARGET: ${{ secrets.IOS_WIDGET_TARGET }}
+          IOS_APP_BUNDLE_ID: ${{ secrets.IOS_APP_BUNDLE_ID }}
+          IOS_WIDGET_BUNDLE_ID: ${{ secrets.IOS_WIDGET_BUNDLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPO_NO_DOTENV: '1'
+          EXPO_PUBLIC_APP_CHANNEL: production
+          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+        run: |
+          mkdir -p .private/artifacts
+          bundle exec fastlane ios build_ipa
+
+      - name: Upload IPA to source repo release
+        if: needs.prepare.outputs.upload_private_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "${{ needs.prepare.outputs.safe_ref }}" \
+            -R "${{ env.SOURCE_REPO }}" \
+            --title "Mobile app ${{ needs.prepare.outputs.safe_ref }}" \
+            --notes "" \
+            "${FLAGS[@]}" \
+            || echo "Release already exists: ${{ needs.prepare.outputs.safe_ref }}"
+          gh release upload "${{ needs.prepare.outputs.safe_ref }}" \
+            ".private/artifacts/${{ needs.prepare.outputs.artifact_name }}" \
+            -R "${{ env.SOURCE_REPO }}" \
+            --clobber
+
+      - name: Upload IPA to App Store Connect/TestFlight
+        if: needs.prepare.outputs.submit_to_store == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_PATH: ${{ github.workspace }}/.private/AuthKey_${{ secrets.ASC_KEY_ID }}.p8
+          IOS_IPA_PATH: ${{ github.workspace }}/.private/artifacts/${{ needs.prepare.outputs.artifact_name }}
+          IOS_APP_BUNDLE_ID: ${{ secrets.IOS_APP_BUNDLE_ID }}
+        run: bundle exec fastlane ios upload_testflight
+
+      - name: Cleanup signing files
+        if: always()
+        run: |
+          rm -rf .private
+          security delete-keychain "${{ steps.signing.outputs.keychain_path }}" || true

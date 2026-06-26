@@ -1,0 +1,313 @@
+name: Mobile Android Release
+run-name: Android ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'internal' }})
+
+on:
+  repository_dispatch:
+    types: [mobile-android-release]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Source repo ref/tag to build, e.g. mobile-v1.0.3-test'
+        required: true
+      target:
+        description: 'Release target'
+        required: true
+        default: internal
+        type: choice
+        options:
+          - internal
+          - external
+          - production
+      artifact_type:
+        description: 'Android artifact type'
+        required: true
+        default: aab
+        type: choice
+        options:
+          - aab
+          - apk
+      version:
+        description: 'Optional semver override, e.g. 1.0.3'
+        required: false
+      build_number:
+        description: 'Optional versionCode override. Must be higher than the last Play upload.'
+        required: false
+      submit:
+        description: 'Upload AAB to Google Play'
+        required: true
+        default: false
+        type: boolean
+      upload_private_release:
+        description: 'Upload artifact to the source repo GitHub Release'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-android-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
+  MOBILE_ARTIFACT_PREFIX: ${{ secrets.MOBILE_ARTIFACT_PREFIX }}
+  MOBILE_SOURCE_REF: ${{ github.event.client_payload.ref || github.event.client_payload.tag || inputs.ref }}
+  MOBILE_TARGET: ${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  MOBILE_ARTIFACT_TYPE: ${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }}
+  MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
+  MOBILE_BUILD_NUMBER: ${{ github.event.client_payload.build_number || inputs.build_number }}
+  SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
+  UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      safe_ref: ${{ steps.resolve.outputs.safe_ref }}
+      target: ${{ steps.resolve.outputs.target }}
+      version: ${{ steps.resolve.outputs.version }}
+      build_number: ${{ steps.resolve.outputs.build_number }}
+      release_env: ${{ steps.resolve.outputs.release_env }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      android_track: ${{ steps.resolve.outputs.android_track }}
+      android_release_status: ${{ steps.resolve.outputs.android_release_status }}
+      submit_to_store: ${{ steps.resolve.outputs.submit_to_store }}
+      upload_private_release: ${{ steps.resolve.outputs.upload_private_release }}
+      artifact_type: ${{ steps.resolve.outputs.artifact_type }}
+      gradle_task: ${{ steps.resolve.outputs.gradle_task }}
+      output_glob: ${{ steps.resolve.outputs.output_glob }}
+      artifact_name: ${{ steps.resolve.outputs.android_artifact_name }}
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Resolve release inputs
+        id: resolve
+        run: node scripts/resolve-mobile-release.mjs
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Validate source repo configuration
+        env:
+          SOURCE_REPO: ${{ env.SOURCE_REPO }}
+          SOURCE_REPO_PAT: ${{ secrets.SOURCE_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          test -n "$SOURCE_REPO" || (echo "SOURCE_REPO secret is required" >&2; exit 1)
+          test -n "$SOURCE_REPO_PAT" || (echo "SOURCE_REPO_PAT secret is required" >&2; exit 1)
+
+      - name: Checkout source app
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.prepare.outputs.source_ref }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.6'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install JS dependencies
+        working-directory: source
+        run: bun install --frozen-lockfile
+
+      - name: Restore Android signing and Firebase files
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_PROD_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_PROD_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64" || (echo "ANDROID_KEYSTORE_BASE64 is required" >&2; exit 1)
+          test -n "$GOOGLE_SERVICES_PROD_JSON_BASE64" || (echo "GOOGLE_SERVICES_PROD_JSON_BASE64 is required" >&2; exit 1)
+
+          mkdir -p source/apps/mobile/android/app
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > source/apps/mobile/android/app/ci-upload.keystore
+          mkdir -p source/apps/mobile/secrets
+          printf '%s' "$GOOGLE_SERVICES_PROD_JSON_BASE64" | base64 --decode > source/apps/mobile/secrets/google-services-prod.json
+
+      - name: Update managed app version
+        working-directory: source/apps/mobile
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const version = process.env.MOBILE_VERSION;
+          if (!/^\d+\.\d+\.\d+$/.test(version)) {
+            throw new Error(`Invalid MOBILE_VERSION: ${version}`);
+          }
+
+          const pkgPath = 'package.json';
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          pkg.version = version;
+          fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+
+          const appConfigPath = 'app.config.ts';
+          const appConfig = fs.readFileSync(appConfigPath, 'utf8');
+          const nextAppConfig = appConfig.replace(
+            /(version:\s*['"])(\d+\.\d+\.\d+)(['"])/,
+            `$1${version}$3`,
+          );
+          if (nextAppConfig === appConfig) {
+            throw new Error('Could not update app.config.ts version');
+          }
+          fs.writeFileSync(appConfigPath, nextAppConfig);
+          console.log(`[version] managed app version set to ${version}`);
+          NODE
+        env:
+          MOBILE_VERSION: ${{ needs.prepare.outputs.version }}
+
+      - name: Generate Android native project
+        working-directory: source/apps/mobile
+        env:
+          EXPO_NO_DOTENV: '1'
+          EXPO_PUBLIC_APP_CHANNEL: production
+          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+        run: bunx expo prebuild --platform android --clean --no-install
+
+      - name: Restore Android runtime files after prebuild
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_PROD_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_PROD_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > source/apps/mobile/android/app/ci-upload.keystore
+          printf '%s' "$GOOGLE_SERVICES_PROD_JSON_BASE64" | base64 --decode > source/apps/mobile/android/app/google-services.json
+
+      - name: Update Android native version
+        working-directory: source/apps/mobile
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const buildGradlePath = 'android/app/build.gradle';
+          const version = process.env.MOBILE_VERSION;
+          const versionCode = process.env.MOBILE_BUILD_NUMBER;
+          let text = fs.readFileSync(buildGradlePath, 'utf8');
+          text = text.replace(/versionName\s+["'][^"']+["']/, `versionName "${version}"`);
+          text = text.replace(/versionCode\s+\d+/, `versionCode ${versionCode}`);
+          fs.writeFileSync(buildGradlePath, text);
+          console.log(`[version] android versionName=${version} versionCode=${versionCode}`);
+          NODE
+        env:
+          MOBILE_VERSION: ${{ needs.prepare.outputs.version }}
+          MOBILE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+
+      - name: Configure Android release signing
+        run: node scripts/configure-android-signing.mjs source/apps/mobile/android/app/build.gradle
+
+      - name: Build Android artifact
+        working-directory: source/apps/mobile/android
+        env:
+          EXPO_NO_DOTENV: '1'
+          EXPO_PUBLIC_APP_CHANNEL: production
+          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+          ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_FILE: ci-upload.keystore
+          ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_CI_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_CI_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew ${{ needs.prepare.outputs.gradle_task }} --no-daemon --stacktrace
+
+      - name: Collect Android artifact
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .private/artifacts
+          shopt -s nullglob
+          files=( source/${{ needs.prepare.outputs.output_glob }} )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No artifact matched: ${{ needs.prepare.outputs.output_glob }}" >&2
+            find source/apps/mobile/android/app/build/outputs -type f | sort || true
+            exit 1
+          fi
+          cp "${files[0]}" ".private/artifacts/${{ needs.prepare.outputs.artifact_name }}"
+          echo "artifact_path=.private/artifacts/${{ needs.prepare.outputs.artifact_name }}" >> "$GITHUB_OUTPUT"
+          ls -lh .private/artifacts
+
+      - name: Upload artifact to source repo release
+        if: needs.prepare.outputs.upload_private_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          FLAGS=()
+          if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then
+            FLAGS+=(--prerelease)
+          fi
+          gh release create "${{ needs.prepare.outputs.safe_ref }}" \
+            -R "${{ env.SOURCE_REPO }}" \
+            --title "Mobile app ${{ needs.prepare.outputs.safe_ref }}" \
+            --notes "" \
+            "${FLAGS[@]}" \
+            || echo "Release already exists: ${{ needs.prepare.outputs.safe_ref }}"
+          gh release upload "${{ needs.prepare.outputs.safe_ref }}" \
+            "${{ steps.collect.outputs.artifact_path }}" \
+            -R "${{ env.SOURCE_REPO }}" \
+            --clobber
+
+      - name: Setup Ruby for Fastlane
+        if: needs.prepare.outputs.submit_to_store == 'true'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Restore Google Play service account
+        if: needs.prepare.outputs.submit_to_store == 'true'
+        shell: bash
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ "${{ needs.prepare.outputs.artifact_type }}" != "aab" ]; then
+            echo "Google Play upload only supports artifact_type=aab in this workflow" >&2
+            exit 1
+          fi
+          test -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64" || (echo "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 is required" >&2; exit 1)
+          mkdir -p .private
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64" | base64 --decode > .private/google-play-service-account.json
+
+      - name: Upload AAB to Google Play
+        if: needs.prepare.outputs.submit_to_store == 'true'
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_PATH: ${{ github.workspace }}/.private/google-play-service-account.json
+          ANDROID_AAB_PATH: ${{ github.workspace }}/${{ steps.collect.outputs.artifact_path }}
+          ANDROID_PACKAGE_NAME: ${{ secrets.ANDROID_PACKAGE_NAME }}
+          ANDROID_PLAY_TRACK: ${{ needs.prepare.outputs.android_track }}
+          ANDROID_RELEASE_STATUS: ${{ needs.prepare.outputs.android_release_status }}
+        run: bundle exec fastlane android upload_play
+
+      - name: Cleanup secret files
+        if: always()
+        run: |
+          rm -rf .private
+          rm -f source/apps/mobile/android/app/ci-upload.keystore
+          rm -f source/apps/mobile/android/app/google-services.json
+          rm -f source/apps/mobile/secrets/google-services-prod.json

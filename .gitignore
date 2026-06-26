@@ -1,0 +1,4 @@
+.bundle/
+.private/
+vendor/bundle/
+
