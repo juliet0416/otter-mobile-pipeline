@@ -1,5 +1,5 @@
 name: Mobile Android Release
-run-name: Android ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'internal' }})
+run-name: Android ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'internal' }}, ${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }})
 
 on:
   repository_dispatch:
@@ -53,7 +53,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mobile-android-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  group: mobile-android-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'internal' }}-${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }}
   cancel-in-progress: true
 
 env:
