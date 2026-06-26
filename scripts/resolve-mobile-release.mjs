@@ -114,6 +114,9 @@ if (!artifact) {
 if (target === 'cn' && artifactType !== 'apk') {
   fail('target "cn" only supports artifact_type "apk".');
 }
+if (target !== 'cn' && artifactType === 'apk') {
+  fail('artifact_type "apk" is only supported for target "cn".');
+}
 
 const version = parseVersion(sourceRef, readEnv('MOBILE_VERSION'));
 const buildNumber = parseBuildNumber(
