@@ -106,16 +106,26 @@ if (!config) {
   fail(`unknown target "${target}". Use internal, external, production, or cn.`);
 }
 
-const artifactType = readEnv('MOBILE_ARTIFACT_TYPE', 'aab');
-const artifact = artifactConfig[artifactType];
-if (!artifact) {
-  fail(`unknown artifact_type "${artifactType}". Use aab or apk.`);
+const platform = readEnv('MOBILE_PLATFORM', 'android');
+if (!['android', 'ios'].includes(platform)) {
+  fail(`unknown platform "${platform}". Use android or ios.`);
 }
-if (target === 'cn' && artifactType !== 'apk') {
-  fail('target "cn" only supports artifact_type "apk".');
+if (platform === 'ios' && target === 'cn') {
+  fail('target "cn" is only supported for platform "android".');
 }
-if (target !== 'cn' && artifactType === 'apk') {
-  fail('artifact_type "apk" is only supported for target "cn".');
+
+const artifactType = platform === 'ios' ? 'ipa' : readEnv('MOBILE_ARTIFACT_TYPE', 'aab');
+const artifact = platform === 'android' ? artifactConfig[artifactType] : null;
+if (platform === 'android') {
+  if (!artifact) {
+    fail(`unknown artifact_type "${artifactType}". Use aab or apk.`);
+  }
+  if (target === 'cn' && artifactType !== 'apk') {
+    fail('target "cn" only supports artifact_type "apk".');
+  }
+  if (target !== 'cn' && artifactType === 'apk') {
+    fail('artifact_type "apk" is only supported for target "cn".');
+  }
 }
 
 const version = parseVersion(sourceRef, readEnv('MOBILE_VERSION'));
@@ -126,7 +136,7 @@ const buildNumber = parseBuildNumber(
 const safeRef = sourceRef.replace(/^refs\/tags\//, '').replace(/[^A-Za-z0-9._-]+/g, '-');
 const clearCache = readBooleanEnv('CLEAR_CACHE', false);
 const submitToStore = readBooleanEnv('SUBMIT_TO_STORE', false);
-if (submitToStore && artifactType !== 'aab') {
+if (submitToStore && platform === 'android' && artifactType !== 'aab') {
   fail('submit_to_store requires artifact_type "aab".');
 }
 const uploadPrivateRelease = readBooleanEnv('UPLOAD_PRIVATE_RELEASE', true);
@@ -134,6 +144,7 @@ const uploadPrivateRelease = readBooleanEnv('UPLOAD_PRIVATE_RELEASE', true);
 writeOutputs({
   source_ref: sourceRef,
   safe_ref: safeRef,
+  platform,
   target,
   version,
   build_number: buildNumber,
@@ -147,8 +158,10 @@ writeOutputs({
   submit_to_store: String(submitToStore),
   upload_private_release: String(uploadPrivateRelease),
   artifact_type: artifactType,
-  gradle_task: artifact.gradleTask,
-  output_glob: artifact.outputGlob,
-  android_artifact_name: `${artifactPrefix}-${version}-${buildNumber}-${target}-android.${artifactType}`,
+  gradle_task: artifact?.gradleTask ?? '',
+  output_glob: artifact?.outputGlob ?? '',
+  android_artifact_name: platform === 'android'
+    ? `${artifactPrefix}-${version}-${buildNumber}-${target}-android.${artifactType}`
+    : '',
   ios_artifact_name: `${artifactPrefix}-${version}-${buildNumber}-${target}-ios.ipa`,
 });
