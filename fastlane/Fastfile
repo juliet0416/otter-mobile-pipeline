@@ -37,6 +37,7 @@ platform :ios do
     app_bundle_id = require_env!("IOS_APP_BUNDLE_ID")
     widget_bundle_id = ENV["IOS_WIDGET_BUNDLE_ID"]
     project_path = File.join(ios_dir, "#{project_name}.xcodeproj")
+    build_logs_dir = ENV["IOS_BUILD_LOG_DIR"] || File.expand_path("~/Library/Logs/gym")
 
     update_code_signing_settings(
       use_automatic_signing: false,
@@ -72,12 +73,16 @@ platform :ios do
       output_directory: require_env!("IOS_OUTPUT_DIR"),
       output_name: require_env!("IOS_OUTPUT_NAME"),
       archive_path: File.join(require_env!("IOS_OUTPUT_DIR"), "#{scheme}.xcarchive"),
+      buildlog_path: build_logs_dir,
       export_method: "app-store",
       export_team_id: require_env!("APPLE_TEAM_ID"),
       export_options: {
         signingStyle: "manual",
         provisioningProfiles: provisioning_profiles
       },
+      skip_package_dependencies_resolution: true,
+      disable_package_automatic_updates: true,
+      skip_package_repository_fetches: true,
       xcargs: "DEVELOPMENT_TEAM=#{require_env!("APPLE_TEAM_ID")} CODE_SIGN_STYLE=Manual"
     )
   end

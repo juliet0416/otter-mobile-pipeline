@@ -83,7 +83,7 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 120
     steps:
       - name: Checkout pipeline repo
@@ -122,12 +122,25 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - name: Print Xcode version
-        run: xcodebuild -version
+      - name: Print Apple toolchain version
+        run: |
+          xcodebuild -version
+          swift --version
 
       - name: Install JS dependencies
         working-directory: source
         run: bun install --frozen-lockfile
+
+      - name: Validate Expo iOS toolchain
+        working-directory: source/apps/mobile
+        run: |
+          set -euo pipefail
+          REQUIRED_SWIFT_TOOLS="$(sed -n 's#// swift-tools-version: ##p' ../../node_modules/expo-modules-jsi/apple/Package.swift | head -1)"
+          echo "ExpoModulesJSI swift-tools-version=${REQUIRED_SWIFT_TOOLS:-unknown}"
+          if [ "$REQUIRED_SWIFT_TOOLS" = "6.2" ] && ! swift --version | grep -Eq 'Swift version (6\.[2-9]|[7-9]\.)'; then
+            echo "Swift 6.2+ is required by ExpoModulesJSI. Use a macOS/Xcode 26 runner." >&2
+            exit 1
+          fi
 
       - name: Restore App Store Connect API key
         if: needs.prepare.outputs.submit_to_store == 'true'
@@ -224,6 +237,7 @@ jobs:
         env:
           MOBILE_APP_ROOT: ${{ github.workspace }}/source/apps/mobile
           IOS_OUTPUT_DIR: ${{ github.workspace }}/.private/artifacts
+          IOS_BUILD_LOG_DIR: ${{ runner.temp }}/gym-logs
           IOS_OUTPUT_NAME: ${{ needs.prepare.outputs.artifact_name }}
           IOS_PROFILE_APP_NAME: ${{ steps.signing.outputs.app_name }}
           IOS_PROFILE_WIDGET_NAME: ${{ steps.signing.outputs.widget_name }}
@@ -239,8 +253,35 @@ jobs:
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: |
-          mkdir -p .private/artifacts
+          mkdir -p .private/artifacts "$IOS_BUILD_LOG_DIR"
           bundle exec fastlane ios build_ipa
+
+      - name: Print iOS build logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          for dir in "$RUNNER_TEMP/gym-logs" "$HOME/Library/Logs/gym"; do
+            [ -d "$dir" ] || continue
+            echo "::group::${dir}"
+            find "$dir" -type f -name '*.log' -print0 | while IFS= read -r -d '' file; do
+              echo "----- ${file}"
+              tail -n 240 "$file"
+            done
+            echo "::endgroup::"
+          done
+
+      - name: Upload iOS failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs-${{ needs.prepare.outputs.safe_ref }}-${{ needs.prepare.outputs.target }}
+          path: |
+            ${{ runner.temp }}/gym-logs
+            ~/Library/Logs/gym
+            source/apps/mobile/ios/build/generated/ios/Package.swift
+            source/apps/mobile/ios/Pods/Target Support Files/ExpoModulesJSI
+          if-no-files-found: ignore
 
       - name: Upload IPA to source repo release
         if: needs.prepare.outputs.upload_private_release == 'true'
