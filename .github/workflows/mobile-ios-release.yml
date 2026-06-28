@@ -1,5 +1,5 @@
 name: Mobile iOS Release
-run-name: iOS ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'internal' }})
+run-name: iOS ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'production' }})
 
 on:
   repository_dispatch:
@@ -12,11 +12,9 @@ on:
       target:
         description: 'Release target'
         required: true
-        default: internal
+        default: production
         type: choice
         options:
-          - internal
-          - external
           - production
       version:
         description: 'Optional semver override, e.g. 1.0.3'
@@ -24,6 +22,10 @@ on:
       build_number:
         description: 'Optional CFBundleVersion override. Must be higher than the last ASC upload.'
         required: false
+      build_number_offset:
+        description: 'Offset added to the CI-resolved App Store Connect build number when build_number is empty.'
+        required: false
+        default: '0'
       submit:
         description: 'Upload IPA to App Store Connect/TestFlight'
         required: true
@@ -43,7 +45,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mobile-ios-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  group: mobile-ios-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'production' }}
   cancel-in-progress: true
 
 env:
@@ -51,9 +53,10 @@ env:
   MOBILE_ARTIFACT_PREFIX: ${{ secrets.MOBILE_ARTIFACT_PREFIX }}
   MOBILE_PLATFORM: ios
   MOBILE_SOURCE_REF: ${{ github.event.client_payload.ref || github.event.client_payload.tag || inputs.ref }}
-  MOBILE_TARGET: ${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  MOBILE_TARGET: ${{ github.event.client_payload.target || inputs.target || 'production' }}
   MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
   MOBILE_BUILD_NUMBER: ${{ github.event.client_payload.build_number || inputs.build_number }}
+  MOBILE_BUILD_NUMBER_OFFSET: ${{ github.event.client_payload.build_number_offset || inputs.build_number_offset || '0' }}
   SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
   IOS_TESTFLIGHT_CHANGELOG: ${{ github.event.client_payload.what_to_test || inputs.what_to_test || 'Mobile app build' }}
@@ -79,6 +82,11 @@ jobs:
 
       - name: Resolve release inputs
         id: resolve
+        env:
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          IOS_APP_BUNDLE_ID: ${{ secrets.IOS_APP_BUNDLE_ID }}
         run: node scripts/resolve-mobile-release.mjs
 
   build:

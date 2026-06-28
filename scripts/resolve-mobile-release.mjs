@@ -1,28 +1,25 @@
 #!/usr/bin/env node
 
 import { appendFileSync } from 'node:fs';
+import { resolveStoreBuildNumber } from './resolve-store-build-number.mjs';
 
 const targetConfig = {
   internal: {
-    releaseEnv: 'test',
     androidTrack: 'internal',
     androidReleaseStatus: 'completed',
     prerelease: 'true',
   },
   external: {
-    releaseEnv: 'test',
     androidTrack: 'beta',
     androidReleaseStatus: 'completed',
     prerelease: 'true',
   },
   production: {
-    releaseEnv: 'production',
     androidTrack: 'production',
     androidReleaseStatus: 'draft',
     prerelease: 'false',
   },
   cn: {
-    releaseEnv: 'production',
     androidTrack: 'internal',
     androidReleaseStatus: 'completed',
     prerelease: 'true',
@@ -77,10 +74,29 @@ function parseVersion(ref, explicitVersion) {
   return match[1];
 }
 
-function parseBuildNumber(raw, fallback) {
-  const value = raw || fallback;
+function parseBuildNumber(raw) {
+  const value = raw;
   if (!/^[1-9]\d*$/.test(value)) {
     fail(`build_number must be a positive integer, got "${value}"`);
+  }
+  return value;
+}
+
+function parseBuildNumberOffset(raw) {
+  const value = raw || '0';
+  if (!/^(0|[1-9]\d*)$/.test(value)) {
+    fail(`build_number_offset must be a non-negative integer, got "${raw}"`);
+  }
+  return Number(value);
+}
+
+function resolveReleaseEnv(platform) {
+  const value = readEnv('MOBILE_RELEASE_ENV', 'production');
+  if (value !== 'test' && value !== 'production') {
+    fail(`MOBILE_RELEASE_ENV must be test or production, got "${value}"`);
+  }
+  if (platform === 'ios' && value !== 'production') {
+    fail('iOS releases only support MOBILE_RELEASE_ENV=production.');
   }
   return value;
 }
@@ -100,18 +116,22 @@ if (!sourceRef) {
   fail('MOBILE_SOURCE_REF is required');
 }
 
-const target = readEnv('MOBILE_TARGET', 'internal');
-const config = targetConfig[target];
-if (!config) {
-  fail(`unknown target "${target}". Use internal, external, production, or cn.`);
-}
-
 const platform = readEnv('MOBILE_PLATFORM', 'android');
 if (!['android', 'ios'].includes(platform)) {
   fail(`unknown platform "${platform}". Use android or ios.`);
 }
+
+const defaultTarget = platform === 'ios' ? 'production' : 'internal';
+const target = readEnv('MOBILE_TARGET', defaultTarget);
+const config = targetConfig[target];
+if (!config) {
+  fail(`unknown target "${target}". Use internal, external, production, or cn.`);
+}
 if (platform === 'ios' && target === 'cn') {
   fail('target "cn" is only supported for platform "android".');
+}
+if (platform === 'ios' && target !== 'production') {
+  fail('iOS releases only support target "production".');
 }
 
 const artifactType = platform === 'ios' ? 'ipa' : readEnv('MOBILE_ARTIFACT_TYPE', 'aab');
@@ -129,10 +149,7 @@ if (platform === 'android') {
 }
 
 const version = parseVersion(sourceRef, readEnv('MOBILE_VERSION'));
-const buildNumber = parseBuildNumber(
-  readEnv('MOBILE_BUILD_NUMBER'),
-  readEnv('GITHUB_RUN_NUMBER', '1'),
-);
+const releaseEnv = resolveReleaseEnv(platform);
 const safeRef = sourceRef.replace(/^refs\/tags\//, '').replace(/[^A-Za-z0-9._-]+/g, '-');
 const clearCache = readBooleanEnv('CLEAR_CACHE', false);
 const submitToStore = readBooleanEnv('SUBMIT_TO_STORE', false);
@@ -140,6 +157,19 @@ if (submitToStore && platform === 'android' && artifactType !== 'aab') {
   fail('submit_to_store requires artifact_type "aab".');
 }
 const uploadPrivateRelease = readBooleanEnv('UPLOAD_PRIVATE_RELEASE', true);
+const explicitBuildNumber = readEnv('MOBILE_BUILD_NUMBER');
+const buildNumber = explicitBuildNumber
+  ? parseBuildNumber(explicitBuildNumber)
+  : parseBuildNumber(await (async () => {
+    try {
+      return await resolveStoreBuildNumber({
+        platform,
+        offset: parseBuildNumberOffset(readEnv('MOBILE_BUILD_NUMBER_OFFSET')),
+      });
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  })());
 
 writeOutputs({
   source_ref: sourceRef,
@@ -148,7 +178,7 @@ writeOutputs({
   target,
   version,
   build_number: buildNumber,
-  release_env: config.releaseEnv,
+  release_env: releaseEnv,
   prerelease: config.prerelease,
   android_track: readEnv('ANDROID_PLAY_TRACK', config.androidTrack),
   android_release_status: readEnv('ANDROID_RELEASE_STATUS', config.androidReleaseStatus),
