@@ -213,6 +213,33 @@ jobs:
           project = project.replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${version};`);
           project = project.replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${buildNumber};`);
           fs.writeFileSync(pbxprojPath, project);
+
+          for (const plistPath of ['ios/Ottermind/Info.plist', 'ios/OttermindExternalWidgetExtension/Info.plist']) {
+            if (!fs.existsSync(plistPath)) {
+              continue;
+            }
+            let plist = fs.readFileSync(plistPath, 'utf8');
+            plist = plist.replace(
+              /(<key>CFBundleShortVersionString<\/key>\s*<string>)([^<]*)(<\/string>)/,
+              `$1${version}$3`,
+            );
+            plist = plist.replace(
+              /(<key>CFBundleVersion<\/key>\s*<string>)([^<]*)(<\/string>)/,
+              `$1${buildNumber}$3`,
+            );
+            fs.writeFileSync(plistPath, plist);
+          }
+
+          for (const plistPath of ['ios/Ottermind/Info.plist', 'ios/OttermindExternalWidgetExtension/Info.plist']) {
+            if (!fs.existsSync(plistPath)) {
+              continue;
+            }
+            const plist = fs.readFileSync(plistPath, 'utf8');
+            if (!plist.includes(`<key>CFBundleVersion</key>\n\t<string>${buildNumber}</string>`)) {
+              throw new Error(`${plistPath} CFBundleVersion was not updated to ${buildNumber}`);
+            }
+          }
+
           console.log(`[version] ios MARKETING_VERSION=${version} CURRENT_PROJECT_VERSION=${buildNumber}`);
           NODE
         env:
