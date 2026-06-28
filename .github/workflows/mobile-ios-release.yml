@@ -208,6 +208,19 @@ jobs:
             throw new Error(`Invalid MOBILE_BUILD_NUMBER: ${buildNumber}`);
           }
 
+          function getPlistStringValue(plist, key) {
+            const match = plist.match(new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`));
+            return match?.[1] ?? null;
+          }
+
+          function replacePlistStringValue(plist, plistPath, key, value) {
+            const pattern = new RegExp(`(<key>${key}</key>\\s*<string>)([^<]*)(</string>)`);
+            if (!pattern.test(plist)) {
+              throw new Error(`${plistPath} ${key} was not found`);
+            }
+            return plist.replace(pattern, `$1${value}$3`);
+          }
+
           const pbxprojPath = 'ios/Ottermind.xcodeproj/project.pbxproj';
           let project = fs.readFileSync(pbxprojPath, 'utf8');
           project = project.replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${version};`);
@@ -219,14 +232,8 @@ jobs:
               continue;
             }
             let plist = fs.readFileSync(plistPath, 'utf8');
-            plist = plist.replace(
-              /(<key>CFBundleShortVersionString<\/key>\s*<string>)([^<]*)(<\/string>)/,
-              `$1${version}$3`,
-            );
-            plist = plist.replace(
-              /(<key>CFBundleVersion<\/key>\s*<string>)([^<]*)(<\/string>)/,
-              `$1${buildNumber}$3`,
-            );
+            plist = replacePlistStringValue(plist, plistPath, 'CFBundleShortVersionString', version);
+            plist = replacePlistStringValue(plist, plistPath, 'CFBundleVersion', buildNumber);
             fs.writeFileSync(plistPath, plist);
           }
 
@@ -235,8 +242,13 @@ jobs:
               continue;
             }
             const plist = fs.readFileSync(plistPath, 'utf8');
-            if (!plist.includes(`<key>CFBundleVersion</key>\n\t<string>${buildNumber}</string>`)) {
-              throw new Error(`${plistPath} CFBundleVersion was not updated to ${buildNumber}`);
+            const actualVersion = getPlistStringValue(plist, 'CFBundleShortVersionString');
+            const actualBuildNumber = getPlistStringValue(plist, 'CFBundleVersion');
+            if (actualVersion !== version) {
+              throw new Error(`${plistPath} CFBundleShortVersionString is ${actualVersion}, expected ${version}`);
+            }
+            if (actualBuildNumber !== buildNumber) {
+              throw new Error(`${plistPath} CFBundleVersion is ${actualBuildNumber}, expected ${buildNumber}`);
             }
           }
 
