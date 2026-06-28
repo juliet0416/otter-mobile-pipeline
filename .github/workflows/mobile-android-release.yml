@@ -280,15 +280,15 @@ jobs:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
         run: |
           set -euo pipefail
-          FLAGS=()
+          prerelease_flag=""
           if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then
-            FLAGS+=(--prerelease)
+            prerelease_flag="--prerelease"
           fi
           gh release create "${{ needs.prepare.outputs.safe_ref }}" \
             -R "${{ env.SOURCE_REPO }}" \
             --title "Mobile app ${{ needs.prepare.outputs.safe_ref }}" \
             --notes "" \
-            "${FLAGS[@]}" \
+            ${prerelease_flag:+$prerelease_flag} \
             || echo "Release already exists: ${{ needs.prepare.outputs.safe_ref }}"
           gh release upload "${{ needs.prepare.outputs.safe_ref }}" \
             "${{ steps.collect.outputs.artifact_path }}" \
