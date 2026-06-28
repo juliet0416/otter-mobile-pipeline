@@ -26,6 +26,11 @@ on:
         description: 'Offset added to the CI-resolved App Store Connect build number when build_number is empty.'
         required: false
         default: '0'
+      clear_cache:
+        description: 'Skip restoring GitHub build caches for this run and save fresh caches.'
+        required: true
+        default: false
+        type: boolean
       submit:
         description: 'Upload IPA to App Store Connect/TestFlight'
         required: true
@@ -57,6 +62,7 @@ env:
   MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
   MOBILE_BUILD_NUMBER: ${{ github.event.client_payload.build_number || inputs.build_number }}
   MOBILE_BUILD_NUMBER_OFFSET: ${{ github.event.client_payload.build_number_offset || inputs.build_number_offset || '0' }}
+  CLEAR_CACHE: ${{ github.event.client_payload.clear_cache || inputs.clear_cache }}
   SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
   IOS_TESTFLIGHT_CHANGELOG: ${{ github.event.client_payload.what_to_test || inputs.what_to_test || 'Mobile app build' }}
@@ -75,6 +81,7 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
       submit_to_store: ${{ steps.resolve.outputs.submit_to_store }}
       upload_private_release: ${{ steps.resolve.outputs.upload_private_release }}
+      clear_cache: ${{ steps.resolve.outputs.clear_cache }}
       artifact_name: ${{ steps.resolve.outputs.ios_artifact_name }}
     steps:
       - name: Checkout pipeline repo
@@ -135,9 +142,46 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Resolve iOS cache keys
+        id: ios-cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode_fingerprint="$(xcodebuild -version | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+          xcode_hash="$(printf '%s' "$xcode_fingerprint" | shasum -a 256 | cut -d ' ' -f1)"
+          echo "xcode_hash=$xcode_hash" >> "$GITHUB_OUTPUT"
+          echo "run_suffix=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare iOS cache directories
+        run: |
+          mkdir -p \
+            "$HOME/.bun/install/cache" \
+            "$HOME/Library/Caches/CocoaPods" \
+            "$HOME/Library/Caches/org.swift.swiftpm" \
+            "$RUNNER_TEMP/ios-derived-data/SourcePackages"
+
+      - name: Restore Bun package cache
+        if: needs.prepare.outputs.clear_cache != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ios-bun-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
+          restore-keys: |
+            ios-bun-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-
+            ios-bun-${{ runner.os }}-
+
       - name: Install JS dependencies
         working-directory: source
         run: bun install --frozen-lockfile
+
+      - name: Save Bun package cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ios-bun-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
 
       - name: Validate Expo iOS toolchain
         working-directory: source/apps/mobile
@@ -201,6 +245,19 @@ jobs:
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: bunx expo prebuild --platform ios --clean --no-install
+
+      - name: Restore CocoaPods cache
+        if: needs.prepare.outputs.clear_cache != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            source/apps/mobile/ios/Pods
+          key: ios-pods-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile') }}-${{ steps.ios-cache.outputs.run_suffix }}
+          restore-keys: |
+            ios-pods-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile') }}-
+            ios-pods-${{ runner.os }}-
 
       - name: Update iOS native version
         working-directory: source/apps/mobile
@@ -280,11 +337,47 @@ jobs:
         working-directory: source/apps/mobile/ios
         run: pod install
 
+      - name: Save CocoaPods cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            source/apps/mobile/ios/Pods
+          key: ios-pods-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile') }}-${{ steps.ios-cache.outputs.run_suffix }}
+
+      - name: Restore SwiftPM cache
+        if: needs.prepare.outputs.clear_cache != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ${{ runner.temp }}/ios-derived-data/SourcePackages
+          key: ios-spm-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/apps/mobile/ios/Podfile.lock') }}-${{ steps.ios-cache.outputs.run_suffix }}
+          restore-keys: |
+            ios-spm-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/apps/mobile/ios/Podfile.lock') }}-
+            ios-spm-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-
+
+      - name: Restore Xcode DerivedData cache
+        if: needs.prepare.outputs.clear_cache != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ios-derived-data
+          key: ios-derived-data-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile.lock') }}-${{ steps.ios-cache.outputs.run_suffix }}
+          restore-keys: |
+            ios-derived-data-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile.lock') }}-
+            ios-derived-data-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-
+
       - name: Build signed IPA
         env:
           MOBILE_APP_ROOT: ${{ github.workspace }}/source/apps/mobile
           IOS_OUTPUT_DIR: ${{ github.workspace }}/.private/artifacts
           IOS_BUILD_LOG_DIR: ${{ runner.temp }}/gym-logs
+          IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/ios-derived-data
+          IOS_XCODE_CLEAN: ${{ needs.prepare.outputs.clear_cache }}
           IOS_OUTPUT_NAME: ${{ needs.prepare.outputs.artifact_name }}
           IOS_PROFILE_APP_NAME: ${{ steps.signing.outputs.app_name }}
           IOS_PROFILE_WIDGET_NAME: ${{ steps.signing.outputs.widget_name }}
@@ -300,8 +393,26 @@ jobs:
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: |
-          mkdir -p .private/artifacts "$IOS_BUILD_LOG_DIR"
+          mkdir -p .private/artifacts "$IOS_BUILD_LOG_DIR" "$IOS_DERIVED_DATA_PATH"
           bundle exec fastlane ios build_ipa
+
+      - name: Save SwiftPM cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ${{ runner.temp }}/ios-derived-data/SourcePackages
+          key: ios-spm-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/apps/mobile/ios/Podfile.lock') }}-${{ steps.ios-cache.outputs.run_suffix }}
+
+      - name: Save Xcode DerivedData cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ios-derived-data
+          key: ios-derived-data-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile.lock') }}-${{ steps.ios-cache.outputs.run_suffix }}
 
       - name: Print iOS build logs on failure
         if: failure()

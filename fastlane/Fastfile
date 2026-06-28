@@ -38,6 +38,7 @@ platform :ios do
     widget_bundle_id = ENV["IOS_WIDGET_BUNDLE_ID"]
     project_path = File.join(ios_dir, "#{project_name}.xcodeproj")
     build_logs_dir = ENV["IOS_BUILD_LOG_DIR"] || File.expand_path("~/Library/Logs/gym")
+    clean_build = ENV.fetch("IOS_XCODE_CLEAN", "false") == "true"
 
     update_code_signing_settings(
       use_automatic_signing: false,
@@ -69,7 +70,8 @@ platform :ios do
       workspace: File.join(ios_dir, "#{project_name}.xcworkspace"),
       scheme: scheme,
       configuration: "Release",
-      clean: true,
+      clean: clean_build,
+      derived_data_path: ENV["IOS_DERIVED_DATA_PATH"],
       output_directory: require_env!("IOS_OUTPUT_DIR"),
       output_name: require_env!("IOS_OUTPUT_NAME"),
       archive_path: File.join(require_env!("IOS_OUTPUT_DIR"), "#{scheme}.xcarchive"),

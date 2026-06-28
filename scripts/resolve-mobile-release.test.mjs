@@ -117,6 +117,7 @@ describe('resolve-mobile-release', () => {
       MOBILE_SOURCE_REF: 'mobile-v1.2.3',
       MOBILE_TARGET: 'production',
       MOBILE_BUILD_NUMBER: '109',
+      CLEAR_CACHE: 'true',
       SUBMIT_TO_STORE: 'true',
     });
 
@@ -127,6 +128,7 @@ describe('resolve-mobile-release', () => {
     assert.equal(result.outputs.gradle_task, '');
     assert.equal(result.outputs.android_artifact_name, '');
     assert.equal(result.outputs.ios_artifact_name, 'mobile-app-1.2.3-109-production-ios.ipa');
+    assert.equal(result.outputs.clear_cache, 'true');
     assert.equal(result.outputs.submit_to_store, 'true');
   });
 
