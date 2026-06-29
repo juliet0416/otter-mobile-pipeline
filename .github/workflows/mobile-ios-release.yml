@@ -177,6 +177,74 @@ jobs:
         working-directory: source
         run: bun install --frozen-lockfile
 
+      - name: Restore RNAudioAPI iOS prebuilt cache
+        if: needs.prepare.outputs.clear_cache != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: source/node_modules/react-native-audio-api/common/cpp/audioapi/external
+          key: ios-rnaudioapi-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
+          restore-keys: |
+            ios-rnaudioapi-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-
+            ios-rnaudioapi-${{ runner.os }}-
+
+      - name: Ensure RNAudioAPI iOS prebuilt binaries
+        working-directory: source/node_modules/react-native-audio-api
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            common/cpp/audioapi/external/iphoneos/libogg.a
+            common/cpp/audioapi/external/iphoneos/libopus.a
+            common/cpp/audioapi/external/iphoneos/libopusfile.a
+            common/cpp/audioapi/external/iphoneos/libvorbis.a
+            common/cpp/audioapi/external/iphoneos/libvorbisenc.a
+            common/cpp/audioapi/external/iphoneos/libvorbisfile.a
+          )
+          required_dirs=(
+            common/cpp/audioapi/external/ffmpeg_ios/libavcodec.xcframework
+            common/cpp/audioapi/external/ffmpeg_ios/libavformat.xcframework
+            common/cpp/audioapi/external/ffmpeg_ios/libavutil.xcframework
+            common/cpp/audioapi/external/ffmpeg_ios/libswresample.xcframework
+          )
+
+          missing=false
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              missing=true
+              break
+            fi
+          done
+          if [ "$missing" = false ]; then
+            for dir in "${required_dirs[@]}"; do
+              if [ ! -d "$dir" ]; then
+                missing=true
+                break
+              fi
+            done
+          fi
+
+          if [ "$missing" = true ]; then
+            chmod +x scripts/download-prebuilt-binaries.sh
+            scripts/download-prebuilt-binaries.sh ios
+          fi
+
+          for file in "${required_files[@]}"; do
+            test -f "$file" || (echo "Missing RNAudioAPI prebuilt binary: $file" >&2; exit 1)
+          done
+          for dir in "${required_dirs[@]}"; do
+            test -d "$dir" || (echo "Missing RNAudioAPI prebuilt framework: $dir" >&2; exit 1)
+          done
+
+      - name: Save RNAudioAPI iOS prebuilt cache
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: source/node_modules/react-native-audio-api/common/cpp/audioapi/external
+          key: ios-rnaudioapi-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
+
       - name: Save Bun package cache
         if: always()
         continue-on-error: true
@@ -490,6 +558,7 @@ jobs:
 
       - name: Notify Feishu release bot
         env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BUILD_RESULT: ${{ needs.build.result }}

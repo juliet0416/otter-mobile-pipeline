@@ -48,7 +48,12 @@ function readEnv(name, fallback = '') {
 function readBooleanEnv(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
-  const value = raw.trim().toLowerCase();
+  return parseBooleanValue(raw, name);
+}
+
+function parseBooleanValue(raw, name) {
+  if (typeof raw === 'boolean') return raw;
+  const value = String(raw ?? '').trim().toLowerCase();
   if (value === 'true' || value === '1' || value === 'yes') return true;
   if (value === 'false' || value === '0' || value === 'no') return false;
   fail(`${name} must be true or false, got "${raw}"`);
@@ -88,6 +93,23 @@ function parseBuildNumberOffset(raw) {
     fail(`build_number_offset must be a non-negative integer, got "${raw}"`);
   }
   return Number(value);
+}
+
+function parseReleaseItems(raw) {
+  const value = raw?.trim();
+  if (!value || value === 'null') return [];
+
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    fail(`MOBILE_RELEASE_ITEMS must be valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!Array.isArray(parsed)) {
+    fail('MOBILE_RELEASE_ITEMS must be a JSON array.');
+  }
+  return parsed;
 }
 
 function resolveReleaseEnv(platform) {
@@ -152,46 +174,133 @@ const version = parseVersion(sourceRef, readEnv('MOBILE_VERSION'));
 const releaseEnv = resolveReleaseEnv(platform);
 const safeRef = sourceRef.replace(/^refs\/tags\//, '').replace(/[^A-Za-z0-9._-]+/g, '-');
 const clearCache = readBooleanEnv('CLEAR_CACHE', false);
-const submitToStore = readBooleanEnv('SUBMIT_TO_STORE', false);
-if (submitToStore && platform === 'android' && artifactType !== 'aab') {
-  fail('submit_to_store requires artifact_type "aab".');
-}
 const uploadPrivateRelease = readBooleanEnv('UPLOAD_PRIVATE_RELEASE', true);
 const explicitBuildNumber = readEnv('MOBILE_BUILD_NUMBER');
-const buildNumber = explicitBuildNumber
-  ? parseBuildNumber(explicitBuildNumber)
-  : parseBuildNumber(await (async () => {
+const releaseItems = parseReleaseItems(readEnv('MOBILE_RELEASE_ITEMS'));
+const defaultSubmitToStore = readBooleanEnv('SUBMIT_TO_STORE', false);
+const defaultItem = {
+  target,
+  artifact_type: artifactType,
+  build_number_offset: readEnv('MOBILE_BUILD_NUMBER_OFFSET', '0'),
+  submit: defaultSubmitToStore,
+};
+const rawItems = releaseItems.length > 0 ? releaseItems : [defaultItem];
+
+async function resolveBuildNumberForOffset(offset) {
+  if (explicitBuildNumber) return parseBuildNumber(explicitBuildNumber);
+  return parseBuildNumber(await (async () => {
     try {
       return await resolveStoreBuildNumber({
         platform,
-        offset: parseBuildNumberOffset(readEnv('MOBILE_BUILD_NUMBER_OFFSET')),
+        offset,
       });
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
     }
   })());
+}
+
+async function resolveItem(rawItem, index) {
+  if (rawItem === null || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+    fail(`MOBILE_RELEASE_ITEMS[${index}] must be an object.`);
+  }
+
+  const itemTarget = String(rawItem.target ?? target);
+  const itemConfig = targetConfig[itemTarget];
+  if (!itemConfig) {
+    fail(`unknown target "${itemTarget}". Use internal, external, production, or cn.`);
+  }
+  if (platform === 'ios' && itemTarget === 'cn') {
+    fail('target "cn" is only supported for platform "android".');
+  }
+  if (platform === 'ios' && itemTarget !== 'production') {
+    fail('iOS releases only support target "production".');
+  }
+
+  const itemArtifactType = platform === 'ios' ? 'ipa' : String(rawItem.artifact_type ?? artifactType);
+  const itemArtifact = platform === 'android' ? artifactConfig[itemArtifactType] : null;
+  if (platform === 'android') {
+    if (!itemArtifact) {
+      fail(`unknown artifact_type "${itemArtifactType}". Use aab or apk.`);
+    }
+    if (itemTarget === 'cn' && itemArtifactType !== 'apk') {
+      fail('target "cn" only supports artifact_type "apk".');
+    }
+    if (itemTarget !== 'cn' && itemArtifactType === 'apk') {
+      fail('artifact_type "apk" is only supported for target "cn".');
+    }
+  }
+
+  const itemSubmitToStore = rawItem.submit === undefined
+    ? defaultSubmitToStore
+    : parseBooleanValue(rawItem.submit, `MOBILE_RELEASE_ITEMS[${index}].submit`);
+  if (itemSubmitToStore && platform === 'android' && itemArtifactType !== 'aab') {
+    fail('submit_to_store requires artifact_type "aab".');
+  }
+
+  const itemOffset = parseBuildNumberOffset(String(rawItem.build_number_offset ?? readEnv('MOBILE_BUILD_NUMBER_OFFSET', '0')));
+  const buildNumber = await resolveBuildNumberForOffset(itemOffset);
+  const artifactName = platform === 'android'
+    ? `${artifactPrefix}-${version}-${buildNumber}-${itemTarget}-android.${itemArtifactType}`
+    : `${artifactPrefix}-${version}-${buildNumber}-${itemTarget}-ios.ipa`;
+
+  return {
+    source_ref: sourceRef,
+    safe_ref: safeRef,
+    platform,
+    target: itemTarget,
+    version,
+    build_number: buildNumber,
+    build_number_offset: String(itemOffset),
+    release_env: releaseEnv,
+    prerelease: itemConfig.prerelease,
+    android_track: readEnv('ANDROID_PLAY_TRACK', itemConfig.androidTrack),
+    android_release_status: readEnv('ANDROID_RELEASE_STATUS', itemConfig.androidReleaseStatus),
+    expo_public_region: itemConfig.region ?? '',
+    expo_public_api_base_url: itemConfig.apiBaseUrl ?? '',
+    clear_cache: String(clearCache),
+    submit_to_store: String(itemSubmitToStore),
+    upload_private_release: String(uploadPrivateRelease),
+    artifact_type: itemArtifactType,
+    gradle_task: itemArtifact?.gradleTask ?? '',
+    output_glob: itemArtifact?.outputGlob ?? '',
+    artifact_name: artifactName,
+  };
+}
+
+const resolvedItems = [];
+for (let index = 0; index < rawItems.length; index += 1) {
+  resolvedItems.push(await resolveItem(rawItems[index], index));
+}
+const firstItem = resolvedItems[0];
+const submitItems = resolvedItems.filter((item) => item.submit_to_store === 'true');
+
+if (!firstItem) {
+  fail('release item list is empty.');
+}
 
 writeOutputs({
   source_ref: sourceRef,
   safe_ref: safeRef,
   platform,
-  target,
+  target: firstItem.target,
   version,
-  build_number: buildNumber,
+  build_number: firstItem.build_number,
   release_env: releaseEnv,
-  prerelease: config.prerelease,
-  android_track: readEnv('ANDROID_PLAY_TRACK', config.androidTrack),
-  android_release_status: readEnv('ANDROID_RELEASE_STATUS', config.androidReleaseStatus),
-  expo_public_region: config.region ?? '',
-  expo_public_api_base_url: config.apiBaseUrl ?? '',
+  prerelease: firstItem.prerelease,
+  android_track: firstItem.android_track,
+  android_release_status: firstItem.android_release_status,
+  expo_public_region: firstItem.expo_public_region,
+  expo_public_api_base_url: firstItem.expo_public_api_base_url,
   clear_cache: String(clearCache),
-  submit_to_store: String(submitToStore),
+  submit_to_store: String(submitItems.length > 0),
   upload_private_release: String(uploadPrivateRelease),
-  artifact_type: artifactType,
-  gradle_task: artifact?.gradleTask ?? '',
-  output_glob: artifact?.outputGlob ?? '',
-  android_artifact_name: platform === 'android'
-    ? `${artifactPrefix}-${version}-${buildNumber}-${target}-android.${artifactType}`
-    : '',
-  ios_artifact_name: `${artifactPrefix}-${version}-${buildNumber}-${target}-ios.ipa`,
+  artifact_type: firstItem.artifact_type,
+  gradle_task: firstItem.gradle_task,
+  output_glob: firstItem.output_glob,
+  android_artifact_name: platform === 'android' ? firstItem.artifact_name : '',
+  ios_artifact_name: platform === 'ios' ? firstItem.artifact_name : '',
+  matrix: JSON.stringify(resolvedItems),
+  submit_matrix: JSON.stringify(submitItems),
+  has_submit: String(submitItems.length > 0),
 });

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, test } from 'node:test';
 
 import {
@@ -26,7 +29,8 @@ describe('notify-feishu-release', () => {
       jobResults: ['success', 'success', 'skipped'],
       platform: 'android',
       ref: 'mobile-v1.0.2',
-      runUrl: 'https://github.com/acme/pipeline/actions/runs/1',
+      runNumber: '17',
+      runUrl: 'https://github.com/acme/pipeline/actions/runs/28355213213',
       ossDestination: 'oss://mobile-release/ottermind/android/1.0.2/mobile.apk',
       ossUpload: true,
       submitToStore: true,
@@ -40,9 +44,47 @@ describe('notify-feishu-release', () => {
     assert.match(JSON.stringify(payload), /mobile-app-1\.0\.2-108-internal-android\.aab/);
     assert.match(JSON.stringify(payload), /OSS 上传/);
     assert.match(JSON.stringify(payload), /Actions/);
-    assert.match(JSON.stringify(payload), /\[#1\]/);
+    assert.match(JSON.stringify(payload), /\[#17\]/);
     assert.match(JSON.stringify(payload), /OSS 地址/);
     assert.doesNotMatch(JSON.stringify(payload), /查看 GitHub Actions/);
+  });
+
+  test('builds one card containing multiple Android artifacts', () => {
+    const payload = buildFeishuCardPayload({
+      artifacts: [
+        {
+          artifactName: 'mobile-app-1.0.2-112-internal-android.aab',
+          artifactType: 'aab',
+          buildNumber: '112',
+          buildResult: 'success',
+          target: 'internal',
+        },
+        {
+          artifactName: 'mobile-app-1.0.2-112-cn-android.apk',
+          artifactType: 'apk',
+          buildNumber: '112',
+          buildResult: 'success',
+          ossDestination: 'oss://chat2db-cdn/ottermind/mobile/android/ottermind_Android_1.0.2-112.apk',
+          ossPublicUrl: 'https://cdn.example.com/ottermind/mobile/android/ottermind_Android_1.0.2-112.apk',
+          ossUpload: 'true',
+          target: 'cn',
+        },
+      ],
+      jobResults: ['success', 'success', 'skipped'],
+      platform: 'android',
+      ref: 'mobile-v1.0.2',
+      runNumber: '18',
+      runUrl: 'https://github.com/acme/pipeline/actions/runs/28355204029',
+      submitToStore: false,
+      target: 'internal',
+      version: '1.0.2',
+    });
+
+    const text = JSON.stringify(payload);
+    assert.match(text, /mobile-app-1\.0\.2-112-internal-android\.aab/);
+    assert.match(text, /mobile-app-1\.0\.2-112-cn-android\.apk/);
+    assert.match(text, /ottermind_Android_1\.0\.2-112\.apk/);
+    assert.match(text, /\[#18\]/);
   });
 
   test('adds Feishu signature fields when a webhook secret is configured', () => {
@@ -67,6 +109,60 @@ describe('notify-feishu-release', () => {
     });
 
     assert.equal(input.skipped, true);
+  });
+
+  test('reads GitHub workflow run number from env', () => {
+    const input = buildNotificationInputFromEnv({
+      FEISHU_RELEASE_WEBHOOK_URL: 'https://example.com/webhook',
+      GITHUB_RUN_NUMBER: '17',
+      GITHUB_RUN_URL: 'https://github.com/acme/pipeline/actions/runs/28355213213',
+      RELEASE_PLATFORM: 'ios',
+      RELEASE_REF: 'mobile-v1.0.2',
+    });
+
+    assert.equal(input.runNumber, '17');
+    assert.equal(input.runUrl, 'https://github.com/acme/pipeline/actions/runs/28355213213');
+  });
+
+  test('reads release artifact summaries from a directory', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'otter-feishu-summary-'));
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'internal-aab.json'), JSON.stringify({
+        artifactName: 'mobile-app-1.0.2-112-internal-android.aab',
+        artifactType: 'aab',
+        buildNumber: '112',
+        buildResult: 'success',
+        target: 'internal',
+      }));
+      writeFileSync(path.join(dir, 'cn-apk.json'), JSON.stringify({
+        artifactName: 'mobile-app-1.0.2-112-cn-android.apk',
+        artifactType: 'apk',
+        buildNumber: '112',
+        buildResult: 'success',
+        ossDestination: 'oss://chat2db-cdn/ottermind/mobile/android/ottermind_Android_1.0.2-112.apk',
+        ossUpload: 'true',
+        target: 'cn',
+      }));
+
+      const input = buildNotificationInputFromEnv({
+        FEISHU_RELEASE_WEBHOOK_URL: 'https://example.com/webhook',
+        RELEASE_ARTIFACTS_JSON_DIR: dir,
+        RELEASE_PLATFORM: 'android',
+        RELEASE_REF: 'mobile-v1.0.2',
+      });
+
+      assert.equal(input.artifacts.length, 2);
+      assert.deepEqual(
+        input.artifacts.map((artifact) => artifact.artifactName).sort(),
+        [
+          'mobile-app-1.0.2-112-cn-android.apk',
+          'mobile-app-1.0.2-112-internal-android.aab',
+        ],
+      );
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
   });
 
   test('does not throw when Feishu returns an error response', async () => {

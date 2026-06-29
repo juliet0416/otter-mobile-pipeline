@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { createHmac } from 'node:crypto';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 
 const SUCCESS_RESULTS = new Set(['success', 'skipped']);
 const PLATFORM_LABELS = {
@@ -20,6 +22,20 @@ function truncate(value, maxLength = 120) {
   const text = String(value ?? '');
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1)}...`;
+}
+
+function normalizeArtifactSummary(summary) {
+  return {
+    artifactName: summary.artifactName ?? summary.artifact_name ?? '',
+    artifactType: summary.artifactType ?? summary.artifact_type ?? '',
+    buildNumber: summary.buildNumber ?? summary.build_number ?? '',
+    buildResult: summary.buildResult ?? summary.build_result ?? '',
+    ossDestination: summary.ossDestination ?? summary.oss_destination ?? '',
+    ossPublicUrl: summary.ossPublicUrl ?? summary.oss_public_url ?? '',
+    ossUpload: summary.ossUpload ?? summary.oss_upload,
+    submitToStore: summary.submitToStore ?? summary.submit_to_store,
+    target: summary.target ?? '',
+  };
 }
 
 export function resolveOverallStatus(jobResults) {
@@ -46,6 +62,16 @@ function buildField(label, value) {
   };
 }
 
+function buildFullWidthBlock(label, value) {
+  return {
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: `**${label}**\n${value}`,
+    },
+  };
+}
+
 function markdownLink(label, url) {
   return url ? `[${label}](${url})` : label;
 }
@@ -59,23 +85,69 @@ function basename(value) {
   return String(value ?? '').split('/').filter(Boolean).at(-1) ?? String(value ?? '');
 }
 
+function statusIcon(status) {
+  const value = String(status ?? '').toLowerCase();
+  if (value === 'success' || value === 'skipped') return '成功';
+  if (value === 'failure' || value === 'cancelled' || value === 'timed_out') return '失败';
+  return value || '-';
+}
+
+function normalizeOssUpload(value) {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'boolean') return value;
+  return normalizeBoolean(value);
+}
+
+function formatArtifactLine(artifact) {
+  const parts = compact([
+    artifact.target,
+    artifact.artifactType?.toUpperCase(),
+    artifact.buildNumber ? `build=${artifact.buildNumber}` : null,
+    artifact.buildResult ? statusIcon(artifact.buildResult) : null,
+  ]);
+  return `${parts.join(' · ')}\n${artifact.artifactName || '-'}`;
+}
+
+function formatOssLine(artifact) {
+  const upload = normalizeOssUpload(artifact.ossUpload);
+  if (upload === undefined && !artifact.ossDestination) return null;
+  const status = upload ? '是' : '否';
+  if (!artifact.ossDestination) return `${artifact.target || '-'} · ${status}`;
+  const label = basename(artifact.ossDestination) || artifact.ossDestination;
+  return `${artifact.target || '-'} · ${status} · ${markdownLink(label, artifact.ossPublicUrl)}`;
+}
+
+function readArtifactSummaries(dir) {
+  if (!dir || !existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((file) => file.endsWith('.json'))
+    .sort()
+    .map((file) => {
+      const fullPath = path.join(dir, file);
+      return normalizeArtifactSummary(JSON.parse(readFileSync(fullPath, 'utf8')));
+    });
+}
+
 export function buildFeishuCardPayload(input) {
+  const artifacts = (input.artifacts ?? []).map(normalizeArtifactSummary);
   const status = input.status ?? resolveOverallStatus(input.jobResults ?? []);
   const platform = PLATFORM_LABELS[input.platform] ?? input.platform ?? 'mobile';
   const title = `${platform} 打包${statusText(status)}`;
+  const targets = [...new Set(compact(artifacts.map((artifact) => artifact.target)))];
+  const buildNumbers = [...new Set(compact(artifacts.map((artifact) => artifact.buildNumber)))];
   const releaseParts = compact([
     input.ref,
-    input.target ? `target=${input.target}` : null,
+    targets.length > 1 ? `targets=${targets.join(',')}` : input.target ? `target=${input.target}` : null,
     input.version ? `version=${input.version}` : null,
-    input.buildNumber ? `build=${input.buildNumber}` : null,
+    buildNumbers.length > 1 ? `builds=${buildNumbers.join(',')}` : input.buildNumber ? `build=${input.buildNumber}` : null,
   ]);
 
   const fields = [
     buildField('平台', platform),
-    buildField('发布目标', input.target ?? '-'),
+    buildField('发布目标', targets.length > 0 ? targets.join(', ') : input.target ?? '-'),
     buildField('源码 ref', input.ref ?? '-'),
     buildField('版本', input.version ?? '-'),
-    buildField('构建号', input.buildNumber ?? '-'),
+    buildField('构建号', buildNumbers.length > 0 ? buildNumbers.join(', ') : input.buildNumber ?? '-'),
     buildField('提交商店', input.submitToStore ? '是' : '否'),
   ];
 
@@ -90,8 +162,18 @@ export function buildFeishuCardPayload(input) {
     fields.push(buildField('OSS 地址', truncate(markdownLink(ossLabel || input.ossDestination, input.ossPublicUrl))));
   }
   if (input.runUrl) {
-    const runNumber = runNumberFromUrl(input.runUrl);
+    const runNumber = input.runNumber || runNumberFromUrl(input.runUrl);
     fields.push(buildField('Actions', markdownLink(`#${runNumber || 'run'}`, input.runUrl)));
+  }
+
+  const artifactLines = artifacts.map(formatArtifactLine);
+  const ossLines = compact(artifacts.map(formatOssLine));
+  const detailBlocks = [];
+  if (artifactLines.length > 0) {
+    detailBlocks.push(buildFullWidthBlock('产物列表', artifactLines.join('\n\n')));
+  }
+  if (ossLines.length > 0) {
+    detailBlocks.push(buildFullWidthBlock('OSS 上传', ossLines.join('\n')));
   }
 
   return {
@@ -122,6 +204,7 @@ export function buildFeishuCardPayload(input) {
           tag: 'div',
           fields,
         },
+        ...detailBlocks,
       ],
     },
   };
@@ -159,6 +242,7 @@ export function buildNotificationInputFromEnv(env = process.env) {
 
   return {
     artifactName: env.RELEASE_ARTIFACT_NAME,
+    artifacts: readArtifactSummaries(env.RELEASE_ARTIFACTS_JSON_DIR),
     buildNumber: env.RELEASE_BUILD_NUMBER,
     jobResults,
     ossDestination: env.RELEASE_OSS_DESTINATION,
@@ -166,6 +250,7 @@ export function buildNotificationInputFromEnv(env = process.env) {
     ossUpload: env.RELEASE_OSS_UPLOAD === undefined ? undefined : normalizeBoolean(env.RELEASE_OSS_UPLOAD),
     platform: env.RELEASE_PLATFORM,
     ref: env.RELEASE_REF,
+    runNumber: env.GITHUB_RUN_NUMBER,
     runUrl: env.GITHUB_RUN_URL,
     secret: env.FEISHU_RELEASE_WEBHOOK_SECRET,
     submitToStore: normalizeBoolean(env.RELEASE_SUBMIT_TO_STORE),

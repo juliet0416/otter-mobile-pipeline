@@ -78,6 +78,7 @@ env:
   MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
   MOBILE_BUILD_NUMBER: ${{ github.event.client_payload.build_number || inputs.build_number }}
   MOBILE_BUILD_NUMBER_OFFSET: ${{ github.event.client_payload.build_number_offset || inputs.build_number_offset || '0' }}
+  MOBILE_RELEASE_ITEMS: ${{ toJson(github.event.client_payload.items) }}
   CLEAR_CACHE: ${{ github.event.client_payload.clear_cache || inputs.clear_cache }}
   SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
@@ -110,6 +111,9 @@ jobs:
       gradle_task: ${{ steps.resolve.outputs.gradle_task }}
       output_glob: ${{ steps.resolve.outputs.output_glob }}
       artifact_name: ${{ steps.resolve.outputs.android_artifact_name }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      submit_matrix: ${{ steps.resolve.outputs.submit_matrix }}
+      has_submit: ${{ steps.resolve.outputs.has_submit }}
     steps:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
@@ -125,11 +129,10 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    outputs:
-      artifact_name: ${{ needs.prepare.outputs.artifact_name }}
-      oss_destination: ${{ steps.oss.outputs.destination }}
-      oss_public_url: ${{ steps.oss.outputs.public_url }}
-      oss_upload_enabled: ${{ steps.oss.outputs.enabled }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJson(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
@@ -231,9 +234,9 @@ jobs:
         env:
           EXPO_NO_DOTENV: '1'
           EXPO_PUBLIC_APP_CHANNEL: production
-          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
-          EXPO_PUBLIC_REGION: ${{ needs.prepare.outputs.expo_public_region }}
-          EXPO_PUBLIC_API_BASE_URL: ${{ needs.prepare.outputs.expo_public_api_base_url }}
+          EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
+          EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
+          EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: bunx expo prebuild --platform android --clean --no-install
 
@@ -262,8 +265,8 @@ jobs:
           console.log(`[version] android versionName=${version} versionCode=${versionCode}`);
           NODE
         env:
-          MOBILE_VERSION: ${{ needs.prepare.outputs.version }}
-          MOBILE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          MOBILE_VERSION: ${{ matrix.release.version }}
+          MOBILE_BUILD_NUMBER: ${{ matrix.release.build_number }}
 
       - name: Configure Android release signing
         run: node scripts/configure-android-signing.mjs source/apps/mobile/android/app/build.gradle
@@ -273,15 +276,15 @@ jobs:
         env:
           EXPO_NO_DOTENV: '1'
           EXPO_PUBLIC_APP_CHANNEL: production
-          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
-          EXPO_PUBLIC_REGION: ${{ needs.prepare.outputs.expo_public_region }}
-          EXPO_PUBLIC_API_BASE_URL: ${{ needs.prepare.outputs.expo_public_api_base_url }}
+          EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
+          EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
+          EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_FILE: ci-upload.keystore
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ORG_GRADLE_PROJECT_CI_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ORG_GRADLE_PROJECT_CI_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew ${{ needs.prepare.outputs.gradle_task }} --no-daemon --stacktrace
+        run: ./gradlew ${{ matrix.release.gradle_task }} --no-daemon --stacktrace
 
       - name: Collect Android artifact
         id: collect
@@ -290,33 +293,33 @@ jobs:
           set -euo pipefail
           mkdir -p .private/artifacts
           shopt -s nullglob
-          files=( source/${{ needs.prepare.outputs.output_glob }} )
+          files=( source/${{ matrix.release.output_glob }} )
           if [ ${#files[@]} -eq 0 ]; then
-            echo "No artifact matched: ${{ needs.prepare.outputs.output_glob }}" >&2
+            echo "No artifact matched: ${{ matrix.release.output_glob }}" >&2
             find source/apps/mobile/android/app/build/outputs -type f | sort || true
             exit 1
           fi
-          cp "${files[0]}" ".private/artifacts/${{ needs.prepare.outputs.artifact_name }}"
-          echo "artifact_path=.private/artifacts/${{ needs.prepare.outputs.artifact_name }}" >> "$GITHUB_OUTPUT"
+          cp "${files[0]}" ".private/artifacts/${{ matrix.release.artifact_name }}"
+          echo "artifact_path=.private/artifacts/${{ matrix.release.artifact_name }}" >> "$GITHUB_OUTPUT"
           ls -lh .private/artifacts
 
       - name: Upload artifact to source repo release
-        if: needs.prepare.outputs.upload_private_release == 'true'
+        if: matrix.release.upload_private_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
         run: |
           set -euo pipefail
           prerelease_flag=""
-          if [ "${{ needs.prepare.outputs.prerelease }}" = "true" ]; then
+          if [ "${{ matrix.release.prerelease }}" = "true" ]; then
             prerelease_flag="--prerelease"
           fi
-          gh release create "${{ needs.prepare.outputs.safe_ref }}" \
+          gh release create "${{ matrix.release.safe_ref }}" \
             -R "${{ env.SOURCE_REPO }}" \
-            --title "Mobile app ${{ needs.prepare.outputs.safe_ref }}" \
+            --title "Mobile app ${{ matrix.release.safe_ref }}" \
             --notes "" \
             ${prerelease_flag:+$prerelease_flag} \
-            || echo "Release already exists: ${{ needs.prepare.outputs.safe_ref }}"
-          gh release upload "${{ needs.prepare.outputs.safe_ref }}" \
+            || echo "Release already exists: ${{ matrix.release.safe_ref }}"
+          gh release upload "${{ matrix.release.safe_ref }}" \
             "${{ steps.collect.outputs.artifact_path }}" \
             -R "${{ env.SOURCE_REPO }}" \
             --clobber
@@ -324,21 +327,22 @@ jobs:
       - name: Resolve OSS upload target
         id: oss
         env:
-          OSS_ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          OSS_ARTIFACT_NAME: ${{ matrix.release.artifact_name }}
           OSS_ARTIFACT_PATH: ${{ steps.collect.outputs.artifact_path }}
-          OSS_ARTIFACT_TYPE: ${{ needs.prepare.outputs.artifact_type }}
+          OSS_ARTIFACT_TYPE: ${{ matrix.release.artifact_type }}
           OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          OSS_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          OSS_BUILD_NUMBER: ${{ matrix.release.build_number }}
           OSS_BUCKET: ${{ env.ALIYUN_OSS_BUCKET }}
           OSS_ENDPOINT: ${{ env.ALIYUN_OSS_ENDPOINT }}
           OSS_PREFIX: ${{ env.ALIYUN_OSS_PREFIX }}
           OSS_PUBLIC_BASE_URL: ${{ env.ALIYUN_OSS_PUBLIC_BASE_URL }}
-          OSS_TARGET: ${{ needs.prepare.outputs.target }}
-          OSS_VERSION: ${{ needs.prepare.outputs.version }}
+          OSS_TARGET: ${{ matrix.release.target }}
+          OSS_VERSION: ${{ matrix.release.version }}
         run: node scripts/resolve-oss-upload.mjs
 
       - name: Upload China APK to OSS
+        id: upload_oss
         if: steps.oss.outputs.enabled == 'true'
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
@@ -353,11 +357,53 @@ jobs:
         if: steps.oss.outputs.enabled != 'true'
         run: echo "${{ steps.oss.outputs.reason }}"
 
-      - name: Upload Android artifact for submit job
-        if: needs.prepare.outputs.submit_to_store == 'true'
+      - name: Write Android release summary
+        if: always()
+        shell: bash
+        env:
+          RELEASE_ITEM_JSON: ${{ toJson(matrix.release) }}
+          BUILD_RESULT: ${{ job.status }}
+          OSS_UPLOAD: ${{ steps.oss.outputs.enabled }}
+          OSS_UPLOAD_RESULT: ${{ steps.upload_oss.outcome }}
+          OSS_DESTINATION: ${{ steps.oss.outputs.destination }}
+          OSS_PUBLIC_URL: ${{ steps.oss.outputs.public_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p .private/release-summaries
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const item = JSON.parse(process.env.RELEASE_ITEM_JSON);
+          const summary = {
+            target: item.target,
+            artifactType: item.artifact_type,
+            artifactName: item.artifact_name,
+            buildNumber: item.build_number,
+            buildResult: process.env.BUILD_RESULT || 'unknown',
+            submitToStore: item.submit_to_store === 'true',
+            ossUpload: process.env.OSS_UPLOAD === 'true'
+              ? String(process.env.OSS_UPLOAD_RESULT === 'success')
+              : process.env.OSS_UPLOAD || '',
+            ossDestination: process.env.OSS_DESTINATION || '',
+            ossPublicUrl: process.env.OSS_PUBLIC_URL || '',
+          };
+          const fileName = `${item.target}-${item.artifact_type}.json`.replace(/[^A-Za-z0-9._-]+/g, '-');
+          fs.writeFileSync(`.private/release-summaries/${fileName}`, `${JSON.stringify(summary, null, 2)}\n`);
+          NODE
+
+      - name: Upload Android release summary
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.prepare.outputs.artifact_name }}
+          name: android-release-summary-${{ matrix.release.target }}-${{ matrix.release.artifact_type }}
+          path: .private/release-summaries/*.json
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Upload Android artifact for submit job
+        if: matrix.release.submit_to_store == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release.artifact_name }}
           path: ${{ steps.collect.outputs.artifact_path }}
           if-no-files-found: error
           retention-days: 1
@@ -372,9 +418,13 @@ jobs:
 
   submit:
     needs: [prepare, build]
-    if: needs.prepare.outputs.submit_to_store == 'true'
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.has_submit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJson(needs.prepare.outputs.submit_matrix) }}
     concurrency:
       group: mobile-android-google-play-submit
       cancel-in-progress: false
@@ -385,7 +435,7 @@ jobs:
       - name: Download Android artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.prepare.outputs.artifact_name }}
+          name: ${{ matrix.release.artifact_name }}
           path: .private/artifacts
 
       - name: Setup Ruby for Fastlane
@@ -400,7 +450,7 @@ jobs:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 }}
         run: |
           set -euo pipefail
-          if [ "${{ needs.prepare.outputs.artifact_type }}" != "aab" ]; then
+          if [ "${{ matrix.release.artifact_type }}" != "aab" ]; then
             echo "Google Play upload only supports artifact_type=aab in this workflow" >&2
             exit 1
           fi
@@ -411,10 +461,10 @@ jobs:
       - name: Upload AAB to Google Play
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_PATH: ${{ github.workspace }}/.private/google-play-service-account.json
-          ANDROID_AAB_PATH: ${{ github.workspace }}/.private/artifacts/${{ needs.prepare.outputs.artifact_name }}
+          ANDROID_AAB_PATH: ${{ github.workspace }}/.private/artifacts/${{ matrix.release.artifact_name }}
           ANDROID_PACKAGE_NAME: ${{ secrets.ANDROID_PACKAGE_NAME }}
-          ANDROID_PLAY_TRACK: ${{ needs.prepare.outputs.android_track }}
-          ANDROID_RELEASE_STATUS: ${{ needs.prepare.outputs.android_release_status }}
+          ANDROID_PLAY_TRACK: ${{ matrix.release.android_track }}
+          ANDROID_RELEASE_STATUS: ${{ matrix.release.android_release_status }}
         run: bundle exec fastlane android upload_play
 
       - name: Cleanup secret files
@@ -430,8 +480,17 @@ jobs:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
 
+      - name: Download Android release summaries
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: android-release-summary-*
+          path: .private/release-summaries
+          merge-multiple: true
+
       - name: Notify Feishu release bot
         env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BUILD_RESULT: ${{ needs.build.result }}
@@ -442,8 +501,6 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version || env.MOBILE_VERSION }}
           RELEASE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number || env.MOBILE_BUILD_NUMBER }}
           RELEASE_ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          RELEASE_ARTIFACTS_JSON_DIR: .private/release-summaries
           RELEASE_SUBMIT_TO_STORE: ${{ needs.prepare.outputs.submit_to_store || env.SUBMIT_TO_STORE }}
-          RELEASE_OSS_UPLOAD: ${{ needs.build.outputs.oss_upload_enabled }}
-          RELEASE_OSS_DESTINATION: ${{ needs.build.outputs.oss_destination }}
-          RELEASE_OSS_PUBLIC_URL: ${{ needs.build.outputs.oss_public_url }}
         run: node scripts/notify-feishu-release.mjs
