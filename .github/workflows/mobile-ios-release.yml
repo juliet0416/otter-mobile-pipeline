@@ -66,6 +66,8 @@ env:
   SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
   IOS_TESTFLIGHT_CHANGELOG: ${{ github.event.client_payload.what_to_test || inputs.what_to_test || 'Mobile app build' }}
+  FEISHU_RELEASE_WEBHOOK_URL: ${{ vars.FEISHU_RELEASE_WEBHOOK_URL || secrets.FEISHU_RELEASE_WEBHOOK_URL }}
+  FEISHU_RELEASE_WEBHOOK_SECRET: ${{ secrets.FEISHU_RELEASE_WEBHOOK_SECRET || vars.FEISHU_RELEASE_WEBHOOK_SECRET }}
 
 jobs:
   prepare:
@@ -477,3 +479,25 @@ jobs:
         run: |
           rm -rf .private
           security delete-keychain "${{ steps.signing.outputs.keychain_path }}" || true
+
+  notify:
+    needs: [prepare, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Notify Feishu release bot
+        env:
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          RELEASE_PLATFORM: ios
+          RELEASE_REF: ${{ needs.prepare.outputs.safe_ref || env.MOBILE_SOURCE_REF }}
+          RELEASE_TARGET: ${{ needs.prepare.outputs.target || env.MOBILE_TARGET }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version || env.MOBILE_VERSION }}
+          RELEASE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number || env.MOBILE_BUILD_NUMBER }}
+          RELEASE_ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          RELEASE_SUBMIT_TO_STORE: ${{ needs.prepare.outputs.submit_to_store || env.SUBMIT_TO_STORE }}
+        run: node scripts/notify-feishu-release.mjs

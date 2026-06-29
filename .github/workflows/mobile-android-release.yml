@@ -81,6 +81,12 @@ env:
   CLEAR_CACHE: ${{ github.event.client_payload.clear_cache || inputs.clear_cache }}
   SUBMIT_TO_STORE: ${{ github.event.client_payload.submit || inputs.submit }}
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
+  FEISHU_RELEASE_WEBHOOK_URL: ${{ vars.FEISHU_RELEASE_WEBHOOK_URL || secrets.FEISHU_RELEASE_WEBHOOK_URL }}
+  FEISHU_RELEASE_WEBHOOK_SECRET: ${{ secrets.FEISHU_RELEASE_WEBHOOK_SECRET || vars.FEISHU_RELEASE_WEBHOOK_SECRET }}
+  ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET || secrets.ALIYUN_OSS_BUCKET || 'chat2db-cdn' }}
+  ALIYUN_OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT || secrets.ALIYUN_OSS_ENDPOINT }}
+  ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX || 'ottermind/mobile/android' }}
+  ALIYUN_OSS_PUBLIC_BASE_URL: ${{ vars.ALIYUN_OSS_PUBLIC_BASE_URL }}
 
 jobs:
   prepare:
@@ -121,6 +127,9 @@ jobs:
     timeout-minutes: 90
     outputs:
       artifact_name: ${{ needs.prepare.outputs.artifact_name }}
+      oss_destination: ${{ steps.oss.outputs.destination }}
+      oss_public_url: ${{ steps.oss.outputs.public_url }}
+      oss_upload_enabled: ${{ steps.oss.outputs.enabled }}
     steps:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
@@ -312,6 +321,38 @@ jobs:
             -R "${{ env.SOURCE_REPO }}" \
             --clobber
 
+      - name: Resolve OSS upload target
+        id: oss
+        env:
+          OSS_ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          OSS_ARTIFACT_PATH: ${{ steps.collect.outputs.artifact_path }}
+          OSS_ARTIFACT_TYPE: ${{ needs.prepare.outputs.artifact_type }}
+          OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          OSS_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
+          OSS_BUCKET: ${{ env.ALIYUN_OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ env.ALIYUN_OSS_ENDPOINT }}
+          OSS_PREFIX: ${{ env.ALIYUN_OSS_PREFIX }}
+          OSS_PUBLIC_BASE_URL: ${{ env.ALIYUN_OSS_PUBLIC_BASE_URL }}
+          OSS_TARGET: ${{ needs.prepare.outputs.target }}
+          OSS_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/resolve-oss-upload.mjs
+
+      - name: Upload China APK to OSS
+        if: steps.oss.outputs.enabled == 'true'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET: ${{ env.ALIYUN_OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ steps.oss.outputs.endpoint }}
+          OSS_OBJECT_KEY: ${{ steps.oss.outputs.object_key }}
+          OSS_SOURCE: ${{ steps.oss.outputs.source }}
+        run: node scripts/upload-oss-artifact.mjs
+
+      - name: Skip OSS upload
+        if: steps.oss.outputs.enabled != 'true'
+        run: echo "${{ steps.oss.outputs.reason }}"
+
       - name: Upload Android artifact for submit job
         if: needs.prepare.outputs.submit_to_store == 'true'
         uses: actions/upload-artifact@v4
@@ -380,3 +421,29 @@ jobs:
         if: always()
         run: |
           rm -rf .private
+
+  notify:
+    needs: [prepare, build, submit]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pipeline repo
+        uses: actions/checkout@v4
+
+      - name: Notify Feishu release bot
+        env:
+          GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          SUBMIT_RESULT: ${{ needs.submit.result }}
+          RELEASE_PLATFORM: android
+          RELEASE_REF: ${{ needs.prepare.outputs.safe_ref || env.MOBILE_SOURCE_REF }}
+          RELEASE_TARGET: ${{ needs.prepare.outputs.target || env.MOBILE_TARGET }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version || env.MOBILE_VERSION }}
+          RELEASE_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number || env.MOBILE_BUILD_NUMBER }}
+          RELEASE_ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+          RELEASE_SUBMIT_TO_STORE: ${{ needs.prepare.outputs.submit_to_store || env.SUBMIT_TO_STORE }}
+          RELEASE_OSS_UPLOAD: ${{ needs.build.outputs.oss_upload_enabled }}
+          RELEASE_OSS_DESTINATION: ${{ needs.build.outputs.oss_destination }}
+          RELEASE_OSS_PUBLIC_URL: ${{ needs.build.outputs.oss_public_url }}
+        run: node scripts/notify-feishu-release.mjs
