@@ -264,6 +264,11 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Sentry auth token
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: test -n "$SENTRY_AUTH_TOKEN" || (echo "SENTRY_AUTH_TOKEN secret is required for Sentry source map upload" >&2; exit 1)
+
       - name: Restore App Store Connect API key
         if: needs.prepare.outputs.submit_to_store == 'true'
         shell: bash
@@ -313,7 +318,7 @@ jobs:
           EXPO_NO_DOTENV: '1'
           EXPO_PUBLIC_APP_CHANNEL: production
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
-          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: bunx expo prebuild --platform ios --clean --no-install
 
       - name: Restore CocoaPods cache
@@ -461,7 +466,7 @@ jobs:
           EXPO_NO_DOTENV: '1'
           EXPO_PUBLIC_APP_CHANNEL: production
           EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
-          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
           mkdir -p .private/artifacts "$IOS_BUILD_LOG_DIR" "$IOS_DERIVED_DATA_PATH"
           bundle exec fastlane ios build_ipa

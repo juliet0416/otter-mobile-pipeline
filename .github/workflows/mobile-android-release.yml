@@ -199,6 +199,11 @@ jobs:
           mkdir -p source/apps/mobile/secrets
           printf '%s' "$GOOGLE_SERVICES_PROD_JSON_BASE64" | base64 --decode > source/apps/mobile/secrets/google-services-prod.json
 
+      - name: Validate Sentry auth token
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: test -n "$SENTRY_AUTH_TOKEN" || (echo "SENTRY_AUTH_TOKEN secret is required for Sentry source map upload" >&2; exit 1)
+
       - name: Update managed app version
         working-directory: source/apps/mobile
         run: |
@@ -237,7 +242,7 @@ jobs:
           EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
           EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
           EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
-          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: bunx expo prebuild --platform android --clean --no-install
 
       - name: Restore Android runtime files after prebuild
@@ -279,7 +284,7 @@ jobs:
           EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
           EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
           EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
-          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_FILE: ci-upload.keystore
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ORG_GRADLE_PROJECT_CI_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
