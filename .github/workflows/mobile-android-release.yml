@@ -221,15 +221,19 @@ jobs:
 
           const appConfigPath = 'app.config.ts';
           const appConfig = fs.readFileSync(appConfigPath, 'utf8');
-          const nextAppConfig = appConfig.replace(
-            /(version:\s*['"])(\d+\.\d+\.\d+)(['"])/,
-            `$1${version}$3`,
-          );
-          if (nextAppConfig === appConfig) {
-            throw new Error('Could not update app.config.ts version');
+          const versionPattern = /(version:\s*['"])(\d+\.\d+\.\d+)(['"])/;
+          const versionMatch = appConfig.match(versionPattern);
+          if (!versionMatch) {
+            throw new Error('Could not find version field in app.config.ts');
           }
-          fs.writeFileSync(appConfigPath, nextAppConfig);
-          console.log(`[version] managed app version set to ${version}`);
+          const currentAppVersion = versionMatch[2];
+          if (currentAppVersion === version) {
+            console.log(`[version] app.config.ts already at ${version}, skipping update`);
+          } else {
+            const nextAppConfig = appConfig.replace(versionPattern, `$1${version}$3`);
+            fs.writeFileSync(appConfigPath, nextAppConfig);
+            console.log(`[version] app.config.ts version updated ${currentAppVersion} -> ${version}`);
+          }
           NODE
         env:
           MOBILE_VERSION: ${{ needs.prepare.outputs.version }}
