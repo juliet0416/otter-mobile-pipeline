@@ -10,18 +10,21 @@ const PLATFORM_LABELS = {
   ios: 'iOS',
 };
 
+// 源码 ref 超链基底（发版 tag 的 GitHub Release 页）
+const SOURCE_REF_BASE_URL = 'https://github.com/OtterMind/ottermind/releases/tag/';
+// aab 产物超链：Google Play Console 提交记录（固定）
+const GOOGLE_PLAY_CONSOLE_URL = 'https://play.google.com/console/u/0/developers/7538199493925030729/app/4973906953075418289/publishing/submission-activity';
+// ios 产物超链：App Store Connect TestFlight（固定）
+const APP_STORE_CONNECT_URL = 'https://appstoreconnect.apple.com/teams/b10774f3-6988-4d42-acec-e250bcd60832/apps/6764060074/testflight/ios';
+// apk 产物超链兜底规则基底（与 OSS_PUBLIC_BASE_URL + OSS_PREFIX 对齐）
+const APK_DOWNLOAD_BASE_URL = 'https://cdn.chat2db-ai.com/ottermind/mobile/android/';
+
 function compact(values) {
   return values.filter((value) => value !== undefined && value !== null && value !== '');
 }
 
 function normalizeBoolean(value) {
   return String(value ?? '').toLowerCase() === 'true';
-}
-
-function truncate(value, maxLength = 120) {
-  const text = String(value ?? '');
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 1)}...`;
 }
 
 function normalizeArtifactSummary(summary) {
@@ -62,16 +65,6 @@ function buildField(label, value) {
   };
 }
 
-function buildFullWidthBlock(label, value) {
-  return {
-    tag: 'div',
-    text: {
-      tag: 'lark_md',
-      content: `**${label}**\n${value}`,
-    },
-  };
-}
-
 function markdownLink(label, url) {
   return url ? `[${label}](${url})` : label;
 }
@@ -81,40 +74,32 @@ function runNumberFromUrl(url) {
   return match?.[1] ?? '';
 }
 
-function basename(value) {
-  return String(value ?? '').split('/').filter(Boolean).at(-1) ?? String(value ?? '');
+function resolveSourceRefUrl(ref) {
+  return ref ? `${SOURCE_REF_BASE_URL}${ref}` : '';
 }
 
-function statusIcon(status) {
-  const value = String(status ?? '').toLowerCase();
-  if (value === 'success' || value === 'skipped') return '成功';
-  if (value === 'failure' || value === 'cancelled' || value === 'timed_out') return '失败';
-  return value || '-';
-}
-
-function normalizeOssUpload(value) {
-  if (value === undefined || value === null || value === '') return undefined;
-  if (typeof value === 'boolean') return value;
-  return normalizeBoolean(value);
-}
-
-function formatArtifactLine(artifact) {
-  const parts = compact([
-    artifact.target,
-    artifact.artifactType?.toUpperCase(),
-    artifact.buildNumber ? `build=${artifact.buildNumber}` : null,
-    artifact.buildResult ? statusIcon(artifact.buildResult) : null,
-  ]);
-  return `${parts.join(' · ')}\n${artifact.artifactName || '-'}`;
-}
-
-function formatOssLine(artifact) {
-  const upload = normalizeOssUpload(artifact.ossUpload);
-  if (upload === undefined && !artifact.ossDestination) return null;
-  const status = upload ? '是' : '否';
-  if (!artifact.ossDestination) return `${artifact.target || '-'} · ${status}`;
-  const label = basename(artifact.ossDestination) || artifact.ossDestination;
-  return `${artifact.target || '-'} · ${status} · ${markdownLink(label, artifact.ossPublicUrl)}`;
+// 产物超链：ios 固定 App Store Connect；apk 优先 OSS 公网地址、兜底按规则拼；aab 固定 Google Play Console
+function resolveArtifactUrl(input, artifacts) {
+  const platform = String(input.platform ?? '').toLowerCase();
+  if (platform === 'ios') {
+    return APP_STORE_CONNECT_URL;
+  }
+  const artifactName = String(input.artifactName ?? '');
+  if (/\.apk$/i.test(artifactName)) {
+    if (input.ossPublicUrl) return input.ossPublicUrl;
+    const apkArtifact = artifacts.find((artifact) => {
+      const type = String(artifact.artifactType ?? '').toLowerCase();
+      const name = String(artifact.artifactName ?? '');
+      return type === 'apk' || /\.apk$/i.test(name);
+    });
+    if (apkArtifact?.ossPublicUrl) return apkArtifact.ossPublicUrl;
+    if (input.version && input.buildNumber) {
+      return `${APK_DOWNLOAD_BASE_URL}ottermind_Android_${input.version}-${input.buildNumber}.apk`;
+    }
+    return '';
+  }
+  // aab 及其余 android 产物统一指向 Google Play Console 提交记录
+  return GOOGLE_PLAY_CONSOLE_URL;
 }
 
 function readArtifactSummaries(dir) {
@@ -145,35 +130,22 @@ export function buildFeishuCardPayload(input) {
   const fields = [
     buildField('平台', platform),
     buildField('发布目标', targets.length > 0 ? targets.join(', ') : input.target ?? '-'),
-    buildField('源码 ref', input.ref ?? '-'),
+    buildField('源码 ref', input.ref ? markdownLink(input.ref, resolveSourceRefUrl(input.ref)) : '-'),
     buildField('版本', input.version ?? '-'),
     buildField('构建号', buildNumbers.length > 0 ? buildNumbers.join(', ') : input.buildNumber ?? '-'),
     buildField('提交商店', input.submitToStore ? '是' : '否'),
   ];
 
   if (input.artifactName) {
-    fields.push(buildField('产物', truncate(input.artifactName)));
-  }
-  if (input.ossUpload !== undefined) {
-    fields.push(buildField('OSS 上传', input.ossUpload ? '是' : '否'));
-  }
-  if (input.ossDestination) {
-    const ossLabel = basename(input.ossDestination);
-    fields.push(buildField('OSS 地址', truncate(markdownLink(ossLabel || input.ossDestination, input.ossPublicUrl))));
+    const artifactUrl = resolveArtifactUrl(input, artifacts);
+    const artifactValue = artifactUrl
+      ? markdownLink(input.artifactName, artifactUrl)
+      : input.artifactName;
+    fields.push(buildField('产物', artifactValue));
   }
   if (input.runUrl) {
     const runNumber = input.runNumber || runNumberFromUrl(input.runUrl);
     fields.push(buildField('Actions', markdownLink(`#${runNumber || 'run'}`, input.runUrl)));
-  }
-
-  const artifactLines = artifacts.map(formatArtifactLine);
-  const ossLines = compact(artifacts.map(formatOssLine));
-  const detailBlocks = [];
-  if (artifactLines.length > 0) {
-    detailBlocks.push(buildFullWidthBlock('产物列表', artifactLines.join('\n\n')));
-  }
-  if (ossLines.length > 0) {
-    detailBlocks.push(buildFullWidthBlock('OSS 上传', ossLines.join('\n')));
   }
 
   return {
@@ -204,7 +176,6 @@ export function buildFeishuCardPayload(input) {
           tag: 'div',
           fields,
         },
-        ...detailBlocks,
       ],
     },
   };
