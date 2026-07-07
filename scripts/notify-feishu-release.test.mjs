@@ -22,7 +22,7 @@ describe('notify-feishu-release', () => {
     assert.equal(resolveOverallStatus(['success', 'failure', 'skipped']), 'failure');
   });
 
-  test('builds an interactive release result card', () => {
+  test('builds an interactive release card with artifact and source ref links (aab)', () => {
     const payload = buildFeishuCardPayload({
       artifactName: 'mobile-app-1.0.2-108-internal-android.aab',
       buildNumber: '108',
@@ -31,8 +31,6 @@ describe('notify-feishu-release', () => {
       ref: 'mobile-v1.0.2',
       runNumber: '17',
       runUrl: 'https://github.com/acme/pipeline/actions/runs/28355213213',
-      ossDestination: 'oss://mobile-release/ottermind/android/1.0.2/mobile.apk',
-      ossUpload: true,
       submitToStore: true,
       target: 'internal',
       version: '1.0.2',
@@ -41,16 +39,25 @@ describe('notify-feishu-release', () => {
     assert.equal(payload.msg_type, 'interactive');
     assert.equal(payload.card.header.template, 'green');
     assert.match(payload.card.header.title.content, /Android/);
-    assert.match(JSON.stringify(payload), /mobile-app-1\.0\.2-108-internal-android\.aab/);
-    assert.match(JSON.stringify(payload), /OSS 上传/);
-    assert.match(JSON.stringify(payload), /Actions/);
-    assert.match(JSON.stringify(payload), /\[#17\]/);
-    assert.match(JSON.stringify(payload), /OSS 地址/);
-    assert.doesNotMatch(JSON.stringify(payload), /查看 GitHub Actions/);
+
+    const text = JSON.stringify(payload);
+    // 产物字段携带 Google Play Console 固定超链
+    assert.match(text, /\[mobile-app-1\.0\.2-108-internal-android\.aab\]\(https:\/\/play\.google\.com\/console\/u\/0\/developers\/7538199493925030729\/app\/4973906953075418289\/publishing\/submission-activity\)/);
+    // 源码 ref 携带 GitHub Release 超链
+    assert.match(text, /\[mobile-v1\.0\.2\]\(https:\/\/github\.com\/OtterMind\/ottermind\/releases\/tag\/mobile-v1\.0\.2\)/);
+    // Actions 超链
+    assert.match(text, /Actions/);
+    assert.match(text, /\[#17\]/);
+    // 产物列表 / OSS 字段已移除
+    assert.doesNotMatch(text, /产物列表/);
+    assert.doesNotMatch(text, /OSS 地址/);
+    assert.doesNotMatch(text, /OSS 上传/);
+    assert.doesNotMatch(text, /查看 GitHub Actions/);
   });
 
-  test('builds one card containing multiple Android artifacts', () => {
+  test('links apk artifact to its OSS public url from artifact summaries', () => {
     const payload = buildFeishuCardPayload({
+      artifactName: 'mobile-app-1.0.2-112-cn-android.apk',
       artifacts: [
         {
           artifactName: 'mobile-app-1.0.2-112-internal-android.aab',
@@ -76,15 +83,50 @@ describe('notify-feishu-release', () => {
       runNumber: '18',
       runUrl: 'https://github.com/acme/pipeline/actions/runs/28355204029',
       submitToStore: false,
-      target: 'internal',
+      target: 'cn',
       version: '1.0.2',
     });
 
     const text = JSON.stringify(payload);
-    assert.match(text, /mobile-app-1\.0\.2-112-internal-android\.aab/);
-    assert.match(text, /mobile-app-1\.0\.2-112-cn-android\.apk/);
-    assert.match(text, /ottermind_Android_1\.0\.2-112\.apk/);
+    assert.match(text, /\[mobile-app-1\.0\.2-112-cn-android\.apk\]\(https:\/\/cdn\.example\.com\/ottermind\/mobile\/android\/ottermind_Android_1\.0\.2-112\.apk\)/);
     assert.match(text, /\[#18\]/);
+    assert.doesNotMatch(text, /产物列表/);
+    assert.doesNotMatch(text, /OSS 上传/);
+  });
+
+  test('falls back to cdn rule url for apk when oss public url is missing', () => {
+    const payload = buildFeishuCardPayload({
+      artifactName: 'mobile-app-1.0.7-112-cn-android.apk',
+      buildNumber: '112',
+      jobResults: ['success'],
+      platform: 'android',
+      ref: 'mobile-v1.0.7',
+      target: 'cn',
+      version: '1.0.7',
+    });
+
+    const text = JSON.stringify(payload);
+    assert.match(text, /\[mobile-app-1\.0\.7-112-cn-android\.apk\]\(https:\/\/cdn\.chat2db-ai\.com\/ottermind\/mobile\/android\/ottermind_Android_1\.0\.7-112\.apk\)/);
+  });
+
+  test('links ios artifact to App Store Connect TestFlight', () => {
+    const payload = buildFeishuCardPayload({
+      artifactName: 'mobile-app-1.0.7-124-production-ios.ipa',
+      buildNumber: '124',
+      jobResults: ['success', 'success', 'success'],
+      platform: 'ios',
+      ref: 'mobile-v1.0.7',
+      runNumber: '18',
+      runUrl: 'https://github.com/acme/pipeline/actions/runs/28355204029',
+      submitToStore: true,
+      target: 'production',
+      version: '1.0.7',
+    });
+
+    const text = JSON.stringify(payload);
+    assert.match(text, /\[mobile-app-1\.0\.7-124-production-ios\.ipa\]\(https:\/\/appstoreconnect\.apple\.com\/teams\/b10774f3-6988-4d42-acec-e250bcd60832\/apps\/6764060074\/testflight\/ios\)/);
+    assert.match(text, /\[mobile-v1\.0\.7\]\(https:\/\/github\.com\/OtterMind\/ottermind\/releases\/tag\/mobile-v1\.0\.7\)/);
+    assert.doesNotMatch(text, /产物列表/);
   });
 
   test('adds Feishu signature fields when a webhook secret is configured', () => {
