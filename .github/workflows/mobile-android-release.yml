@@ -1,5 +1,5 @@
 name: Mobile Android Release
-run-name: Android ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'internal' }}, ${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }})
+run-name: Android ${{ github.event.client_payload.ref || inputs.ref }} (${{ github.event.client_payload.target || inputs.target || 'production' }}, ${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }})
 
 on:
   repository_dispatch:
@@ -12,7 +12,7 @@ on:
       target:
         description: 'Google Play track/distribution target'
         required: true
-        default: internal
+        default: production
         type: choice
         options:
           - internal
@@ -65,14 +65,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: mobile-android-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'internal' }}-${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }}
+  group: mobile-android-${{ github.event.client_payload.ref || inputs.ref }}-${{ github.event.client_payload.target || inputs.target || 'production' }}-${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }}
   cancel-in-progress: true
 
 env:
   SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
   MOBILE_ARTIFACT_PREFIX: ${{ secrets.MOBILE_ARTIFACT_PREFIX }}
   MOBILE_SOURCE_REF: ${{ github.event.client_payload.ref || github.event.client_payload.tag || inputs.ref }}
-  MOBILE_TARGET: ${{ github.event.client_payload.target || inputs.target || 'internal' }}
+  MOBILE_TARGET: ${{ github.event.client_payload.target || inputs.target || 'production' }}
   MOBILE_ARTIFACT_TYPE: ${{ github.event.client_payload.artifact_type || inputs.artifact_type || 'aab' }}
   MOBILE_RELEASE_ENV: ${{ github.event.client_payload.release_env || inputs.release_env || 'production' }}
   MOBILE_VERSION: ${{ github.event.client_payload.version || inputs.version }}
