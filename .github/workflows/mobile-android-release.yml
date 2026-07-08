@@ -205,36 +205,7 @@ jobs:
         run: test -n "$SENTRY_AUTH_TOKEN" || (echo "SENTRY_AUTH_TOKEN secret is required for Sentry source map upload" >&2; exit 1)
 
       - name: Update managed app version
-        working-directory: source/apps/mobile
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
-          const version = process.env.MOBILE_VERSION;
-          if (!/^\d+\.\d+\.\d+$/.test(version)) {
-            throw new Error(`Invalid MOBILE_VERSION: ${version}`);
-          }
-
-          const pkgPath = 'package.json';
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-          pkg.version = version;
-          fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
-
-          const appConfigPath = 'app.config.ts';
-          const appConfig = fs.readFileSync(appConfigPath, 'utf8');
-          const versionPattern = /(version:\s*['"])(\d+\.\d+\.\d+)(['"])/;
-          const versionMatch = appConfig.match(versionPattern);
-          if (!versionMatch) {
-            throw new Error('Could not find version field in app.config.ts');
-          }
-          const currentAppVersion = versionMatch[2];
-          if (currentAppVersion === version) {
-            console.log(`[version] app.config.ts already at ${version}, skipping update`);
-          } else {
-            const nextAppConfig = appConfig.replace(versionPattern, `$1${version}$3`);
-            fs.writeFileSync(appConfigPath, nextAppConfig);
-            console.log(`[version] app.config.ts version updated ${currentAppVersion} -> ${version}`);
-          }
-          NODE
+        run: node scripts/update-managed-app-version.mjs source/apps/mobile
         env:
           MOBILE_VERSION: ${{ needs.prepare.outputs.version }}
 
