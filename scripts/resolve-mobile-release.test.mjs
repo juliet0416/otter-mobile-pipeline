@@ -118,15 +118,19 @@ describe('resolve-mobile-release', () => {
       MOBILE_RELEASE_ITEMS: JSON.stringify([
         { target: 'internal', artifact_type: 'aab', build_number_offset: '0', submit: false },
         { target: 'cn', artifact_type: 'apk', build_number_offset: '0', submit: false },
+        { target: 'production', artifact_type: 'apk', build_number_offset: '0', submit: false },
       ]),
     });
 
     assert.equal(result.status, 0);
     assert.equal(result.outputs.submit_to_store, 'false');
     const matrix = JSON.parse(result.outputs.matrix);
-    assert.equal(matrix.length, 2);
+    assert.equal(matrix.length, 3);
     assert.equal(matrix[0].artifact_name, 'mobile-app-1.2.3-108-internal-android.aab');
     assert.equal(matrix[1].artifact_name, 'mobile-app-1.2.3-108-cn-android.apk');
+    assert.equal(matrix[2].artifact_name, 'mobile-app-1.2.3-108-production-android.apk');
+    assert.equal(matrix[2].expo_public_region, 'global');
+    assert.equal(matrix[2].expo_public_api_base_url, 'https://api.ottermind.ai');
     assert.equal(result.outputs.submit_matrix, '[]');
   });
 
@@ -137,6 +141,7 @@ describe('resolve-mobile-release', () => {
       MOBILE_RELEASE_ITEMS: JSON.stringify([
         { target: 'internal', artifact_type: 'aab', build_number_offset: '0', submit: true },
         { target: 'cn', artifact_type: 'apk', build_number_offset: '0', submit: false },
+        { target: 'production', artifact_type: 'apk', build_number_offset: '0', submit: false },
       ]),
     });
 
@@ -262,7 +267,7 @@ describe('resolve-mobile-release', () => {
     assert.match(result.stderr, /target "cn" is only supported/);
   });
 
-  it('keeps Android APK limited to the China target', () => {
+  it('resolves global production APK with an explicit global backend', () => {
     const result = runResolve({
       MOBILE_SOURCE_REF: 'mobile-v1.2.3',
       MOBILE_TARGET: 'production',
@@ -270,7 +275,51 @@ describe('resolve-mobile-release', () => {
       MOBILE_BUILD_NUMBER: '109',
     });
 
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.outputs.expo_public_region, 'global');
+    assert.equal(result.outputs.expo_public_api_base_url, 'https://api.ottermind.ai');
+    assert.equal(result.outputs.release_env, 'production');
+    assert.equal(result.outputs.gradle_task, 'assembleRelease');
+    assert.equal(result.outputs.android_artifact_name, 'mobile-app-1.2.3-109-production-android.apk');
+    assert.equal(result.outputs.submit_matrix, '[]');
+  });
+});
+
+//#region Global APK 发布边界
+for (const batch of [false, true]) {
+  it(`rejects test backend for global APK, batch=${batch}`, () => {
+    const result = runResolve({
+      MOBILE_SOURCE_REF: 'mobile-v1.4.3', MOBILE_BUILD_NUMBER: '150',
+      MOBILE_TARGET: 'production', MOBILE_RELEASE_ENV: 'test',
+      ...(batch
+        ? { MOBILE_RELEASE_ITEMS: JSON.stringify([{ target: 'production', artifact_type: 'apk' }]) }
+        : { MOBILE_ARTIFACT_TYPE: 'apk' }),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /global APK requires MOBILE_RELEASE_ENV=production/);
+  });
+
+  it(`rejects submitting global APK to Google Play, batch=${batch}`, () => {
+    const result = runResolve({
+      MOBILE_SOURCE_REF: 'mobile-v1.4.3', MOBILE_BUILD_NUMBER: '150',
+      MOBILE_TARGET: 'production', SUBMIT_TO_STORE: 'true',
+      ...(batch
+        ? { MOBILE_RELEASE_ITEMS: JSON.stringify([{ target: 'production', artifact_type: 'apk' }]) }
+        : { MOBILE_ARTIFACT_TYPE: 'apk' }),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /submit_to_store requires artifact_type "aab"/);
+  });
+}
+
+for (const target of ['internal', 'external']) {
+  it(`keeps APK unsupported for ${target}`, () => {
+    const result = runResolve({
+      MOBILE_SOURCE_REF: 'mobile-v1.4.3', MOBILE_BUILD_NUMBER: '150',
+      MOBILE_TARGET: target, MOBILE_ARTIFACT_TYPE: 'apk',
+    });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /artifact_type "apk" is only supported/);
   });
-});
+}
+//#endregion

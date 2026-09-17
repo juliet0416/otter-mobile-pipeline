@@ -20,7 +20,7 @@ on:
           - production
           - cn
       artifact_type:
-        description: 'Android artifact type'
+        description: 'Android artifact type: APK requires target=cn or production (global)'
         required: true
         default: aab
         type: choice

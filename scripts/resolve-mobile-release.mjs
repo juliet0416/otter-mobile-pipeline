@@ -165,8 +165,8 @@ if (platform === 'android') {
   if (target === 'cn' && artifactType !== 'apk') {
     fail('target "cn" only supports artifact_type "apk".');
   }
-  if (target !== 'cn' && artifactType === 'apk') {
-    fail('artifact_type "apk" is only supported for target "cn".');
+  if (!['cn', 'production'].includes(target) && artifactType === 'apk') {
+    fail('artifact_type "apk" is only supported for target "cn" or "production".');
   }
 }
 
@@ -226,10 +226,17 @@ async function resolveItem(rawItem, index) {
     if (itemTarget === 'cn' && itemArtifactType !== 'apk') {
       fail('target "cn" only supports artifact_type "apk".');
     }
-    if (itemTarget !== 'cn' && itemArtifactType === 'apk') {
-      fail('artifact_type "apk" is only supported for target "cn".');
+    if (!['cn', 'production'].includes(itemTarget) && itemArtifactType === 'apk') {
+      fail('artifact_type "apk" is only supported for target "cn" or "production".');
     }
   }
+
+  //#region Global APK 正式环境
+  const isGlobalApk = platform === 'android' && itemTarget === 'production' && itemArtifactType === 'apk';
+  if (isGlobalApk && releaseEnv !== 'production') {
+    fail('global APK requires MOBILE_RELEASE_ENV=production.');
+  }
+  //#endregion
 
   const itemSubmitToStore = rawItem.submit === undefined
     ? defaultSubmitToStore
@@ -256,8 +263,8 @@ async function resolveItem(rawItem, index) {
     prerelease: itemConfig.prerelease,
     android_track: readEnv('ANDROID_PLAY_TRACK', itemConfig.androidTrack),
     android_release_status: readEnv('ANDROID_RELEASE_STATUS', itemConfig.androidReleaseStatus),
-    expo_public_region: itemConfig.region ?? '',
-    expo_public_api_base_url: itemConfig.apiBaseUrl ?? '',
+    expo_public_region: isGlobalApk ? 'global' : itemConfig.region ?? '',
+    expo_public_api_base_url: isGlobalApk ? 'https://api.ottermind.ai' : itemConfig.apiBaseUrl ?? '',
     clear_cache: String(clearCache),
     submit_to_store: String(itemSubmitToStore),
     upload_private_release: String(uploadPrivateRelease),
