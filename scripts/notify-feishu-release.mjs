@@ -16,8 +16,8 @@ const SOURCE_REF_BASE_URL = 'https://github.com/OtterMind/ottermind/releases/tag
 const GOOGLE_PLAY_CONSOLE_URL = 'https://play.google.com/console/u/0/developers/7538199493925030729/app/4973906953075418289/publishing/submission-activity';
 // ios 产物超链：App Store Connect TestFlight（固定）
 const APP_STORE_CONNECT_URL = 'https://appstoreconnect.apple.com/teams/b10774f3-6988-4d42-acec-e250bcd60832/apps/6764060074/testflight/ios';
-// apk 产物超链兜底规则基底（与 OSS_PUBLIC_BASE_URL + OSS_PREFIX 对齐）
-const APK_DOWNLOAD_BASE_URL = 'https://cdn.chat2db-ai.com/ottermind/mobile/android/';
+// APK 产物超链兜底规则基底（与 R2_PUBLIC_BASE_URL + R2_OBJECT_PREFIX 对齐）
+const APK_DOWNLOAD_BASE_URL = 'https://cdn.ottermind.ai/mobile/appUpdate/';
 
 function compact(values) {
   return values.filter((value) => value !== undefined && value !== null && value !== '');
@@ -33,9 +33,9 @@ function normalizeArtifactSummary(summary) {
     artifactType: summary.artifactType ?? summary.artifact_type ?? '',
     buildNumber: summary.buildNumber ?? summary.build_number ?? '',
     buildResult: summary.buildResult ?? summary.build_result ?? '',
-    ossDestination: summary.ossDestination ?? summary.oss_destination ?? '',
-    ossPublicUrl: summary.ossPublicUrl ?? summary.oss_public_url ?? '',
-    ossUpload: summary.ossUpload ?? summary.oss_upload,
+    r2Destination: summary.r2Destination ?? summary.r2_destination ?? summary.ossDestination ?? summary.oss_destination ?? '',
+    r2PublicUrl: summary.r2PublicUrl ?? summary.r2_public_url ?? summary.ossPublicUrl ?? summary.oss_public_url ?? '',
+    r2Upload: summary.r2Upload ?? summary.r2_upload ?? summary.ossUpload ?? summary.oss_upload,
     submitToStore: summary.submitToStore ?? summary.submit_to_store,
     target: summary.target ?? '',
   };
@@ -78,7 +78,7 @@ function resolveSourceRefUrl(ref) {
   return ref ? `${SOURCE_REF_BASE_URL}${ref}` : '';
 }
 
-// 产物超链：ios 固定 App Store Connect；apk 优先 OSS 公网地址、兜底按规则拼；aab 固定 Google Play Console
+// 产物超链：ios 固定 App Store Connect；apk 优先 R2 公网地址、兜底按规则拼；aab 固定 Google Play Console
 function resolveArtifactUrl(input, artifacts) {
   const platform = String(input.platform ?? '').toLowerCase();
   if (platform === 'ios') {
@@ -86,15 +86,18 @@ function resolveArtifactUrl(input, artifacts) {
   }
   const artifactName = String(input.artifactName ?? '');
   if (/\.apk$/i.test(artifactName)) {
-    if (input.ossPublicUrl) return input.ossPublicUrl;
+    if (input.r2PublicUrl) return input.r2PublicUrl;
     const apkArtifact = artifacts.find((artifact) => {
       const type = String(artifact.artifactType ?? '').toLowerCase();
       const name = String(artifact.artifactName ?? '');
       return type === 'apk' || /\.apk$/i.test(name);
     });
-    if (apkArtifact?.ossPublicUrl) return apkArtifact.ossPublicUrl;
+    if (apkArtifact?.r2PublicUrl) return apkArtifact.r2PublicUrl;
     if (input.version && input.buildNumber) {
-      return `${APK_DOWNLOAD_BASE_URL}ottermind_Android_${input.version}-${input.buildNumber}.apk`;
+      const name = input.target === 'production'
+        ? `ottermind_Android_global_${input.version}-${input.buildNumber}.apk`
+        : `ottermind_Android_${input.version}-${input.buildNumber}.apk`;
+      return `${APK_DOWNLOAD_BASE_URL}${name}`;
     }
     return '';
   }
@@ -216,9 +219,11 @@ export function buildNotificationInputFromEnv(env = process.env) {
     artifacts: readArtifactSummaries(env.RELEASE_ARTIFACTS_JSON_DIR),
     buildNumber: env.RELEASE_BUILD_NUMBER,
     jobResults,
-    ossDestination: env.RELEASE_OSS_DESTINATION,
-    ossPublicUrl: env.RELEASE_OSS_PUBLIC_URL,
-    ossUpload: env.RELEASE_OSS_UPLOAD === undefined ? undefined : normalizeBoolean(env.RELEASE_OSS_UPLOAD),
+    r2Destination: env.RELEASE_R2_DESTINATION ?? env.RELEASE_OSS_DESTINATION,
+    r2PublicUrl: env.RELEASE_R2_PUBLIC_URL ?? env.RELEASE_OSS_PUBLIC_URL,
+    r2Upload: env.RELEASE_R2_UPLOAD === undefined
+      ? (env.RELEASE_OSS_UPLOAD === undefined ? undefined : normalizeBoolean(env.RELEASE_OSS_UPLOAD))
+      : normalizeBoolean(env.RELEASE_R2_UPLOAD),
     platform: env.RELEASE_PLATFORM,
     ref: env.RELEASE_REF,
     runNumber: env.GITHUB_RUN_NUMBER,

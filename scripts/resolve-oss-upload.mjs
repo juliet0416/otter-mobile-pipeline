@@ -6,76 +6,52 @@ function trimSlashes(value) {
   return String(value ?? '').replace(/^\/+|\/+$/g, '');
 }
 
-function compact(values) {
-  return values.filter((value) => value !== undefined && value !== null && value !== '');
-}
-
 function buildPublicUrl(baseUrl, objectKey) {
   if (!baseUrl) return '';
   return `${String(baseUrl).replace(/\/+$/g, '')}/${objectKey}`;
 }
 
-export function buildOssUploadName({ buildNumber, version }) {
+export function buildR2UploadName({ buildNumber, target, version }) {
   if (!version || !buildNumber) return '';
-  return `ottermind_Android_${version}-${buildNumber}.apk`;
+  const prefix = target === 'production' ? 'ottermind_Android_global_' : 'ottermind_Android_';
+  return `${prefix}${version}-${buildNumber}.apk`;
 }
 
-export function buildOssObjectKey({ prefix, uploadName }) {
-  return compact([
-    trimSlashes(prefix),
-    trimSlashes(uploadName),
-  ]).join('/');
+export function buildR2ObjectKey({ prefix, uploadName }) {
+  return [trimSlashes(prefix), trimSlashes(uploadName)].filter(Boolean).join('/');
 }
 
-export function resolveOssUpload(input) {
-  if (input.target !== 'cn' || input.artifactType !== 'apk') {
-    return {
-      enabled: false,
-      reason: 'OSS upload only supports target=cn artifact_type=apk',
-    };
+export function resolveR2Upload(input) {
+  if (!['cn', 'production'].includes(input.target) || input.artifactType !== 'apk') {
+    return { enabled: false, reason: 'R2 upload only supports target=cn|production artifact_type=apk' };
   }
-
   if (!input.bucket || !input.endpoint) {
-    return {
-      enabled: false,
-      reason: 'OSS bucket or endpoint is not configured',
-    };
+    return { enabled: false, reason: 'R2 bucket or endpoint is not configured' };
   }
-
   if (!input.accessKeyId || !input.accessKeySecret) {
-    return {
-      enabled: false,
-      reason: 'OSS credentials are not configured',
-    };
+    return { enabled: false, reason: 'R2 credentials are not configured' };
   }
-
   if (!input.artifactName || !input.artifactPath) {
-    return {
-      enabled: false,
-      reason: 'OSS artifact name or path is missing',
-    };
+    return { enabled: false, reason: 'R2 artifact name or path is missing' };
   }
   if (!input.version || !input.buildNumber) {
-    return {
-      enabled: false,
-      reason: 'OSS upload version or build number is missing',
-    };
+    return { enabled: false, reason: 'R2 upload version or build number is missing' };
   }
 
-  const uploadName = buildOssUploadName({
-    buildNumber: input.buildNumber,
-    version: input.version,
-  });
-  const objectKey = buildOssObjectKey({
-    prefix: input.prefix,
-    uploadName,
-  });
-
+  const uploadName = buildR2UploadName({ buildNumber: input.buildNumber, target: input.target, version: input.version });
+  const objectKey = buildR2ObjectKey({ prefix: input.prefix, uploadName });
+  const latestName = input.target === 'production'
+    ? 'ottermind_Android_global_latest.apk'
+    : 'ottermind_Android_latest.apk';
+  const latestObjectKey = buildR2ObjectKey({ prefix: input.prefix, uploadName: latestName });
   return {
     bucket: input.bucket,
-    destination: `oss://${input.bucket}/${objectKey}`,
+    destination: `r2://${input.bucket}/${objectKey}`,
     enabled: true,
     endpoint: input.endpoint,
+    latestDestination: `r2://${input.bucket}/${latestObjectKey}`,
+    latestObjectKey,
+    latestPublicUrl: buildPublicUrl(input.publicBaseUrl, latestObjectKey),
     objectKey,
     publicUrl: buildPublicUrl(input.publicBaseUrl, objectKey),
     source: input.artifactPath,
@@ -85,34 +61,34 @@ export function resolveOssUpload(input) {
 
 function writeOutput(name, value) {
   console.log(`${name}=${value}`);
-  if (process.env.GITHUB_OUTPUT) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
-  }
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
 }
 
 async function main() {
-  const result = resolveOssUpload({
-    artifactName: process.env.OSS_ARTIFACT_NAME,
-    artifactPath: process.env.OSS_ARTIFACT_PATH,
-    artifactType: process.env.OSS_ARTIFACT_TYPE,
-    accessKeyId: process.env.OSS_ACCESS_KEY_ID,
-    accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET,
-    buildNumber: process.env.OSS_BUILD_NUMBER,
-    bucket: process.env.OSS_BUCKET,
-    endpoint: process.env.OSS_ENDPOINT,
-    prefix: process.env.OSS_PREFIX,
-    publicBaseUrl: process.env.OSS_PUBLIC_BASE_URL,
-    target: process.env.OSS_TARGET,
-    version: process.env.OSS_VERSION,
+  const result = resolveR2Upload({
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    accessKeySecret: process.env.R2_SECRET_ACCESS_KEY,
+    artifactName: process.env.R2_ARTIFACT_NAME,
+    artifactPath: process.env.R2_ARTIFACT_PATH,
+    artifactType: process.env.R2_ARTIFACT_TYPE,
+    buildNumber: process.env.R2_BUILD_NUMBER,
+    bucket: process.env.R2_BUCKET_NAME,
+    endpoint: process.env.R2_ENDPOINT,
+    prefix: process.env.R2_OBJECT_PREFIX,
+    publicBaseUrl: process.env.R2_PUBLIC_BASE_URL,
+    target: process.env.R2_TARGET,
+    version: process.env.R2_VERSION,
   });
-
   writeOutput('enabled', String(result.enabled));
   writeOutput('reason', result.reason ?? '');
   writeOutput('source', result.source ?? '');
   writeOutput('destination', result.destination ?? '');
   writeOutput('endpoint', result.endpoint ?? '');
   writeOutput('object_key', result.objectKey ?? '');
+  writeOutput('latest_destination', result.latestDestination ?? '');
+  writeOutput('latest_object_key', result.latestObjectKey ?? '');
   writeOutput('public_url', result.publicUrl ?? '');
+  writeOutput('latest_public_url', result.latestPublicUrl ?? '');
   writeOutput('upload_name', result.uploadName ?? '');
 }
 

@@ -55,7 +55,7 @@ describe('notify-feishu-release', () => {
     assert.doesNotMatch(text, /查看 GitHub Actions/);
   });
 
-  test('links apk artifact to its OSS public url from artifact summaries', () => {
+  test('links apk artifact to its R2 public url from artifact summaries', () => {
     const payload = buildFeishuCardPayload({
       artifactName: 'mobile-app-1.0.2-112-cn-android.apk',
       artifacts: [
@@ -71,9 +71,9 @@ describe('notify-feishu-release', () => {
           artifactType: 'apk',
           buildNumber: '112',
           buildResult: 'success',
-          ossDestination: 'oss://chat2db-cdn/ottermind/mobile/android/ottermind_Android_1.0.2-112.apk',
-          ossPublicUrl: 'https://cdn.example.com/ottermind/mobile/android/ottermind_Android_1.0.2-112.apk',
-          ossUpload: 'true',
+          r2Destination: 'r2://ottermind/mobile/appUpdate/ottermind_Android_1.0.2-112.apk',
+          r2PublicUrl: 'https://cdn.ottermind.ai/mobile/appUpdate/ottermind_Android_1.0.2-112.apk',
+          r2Upload: 'true',
           target: 'cn',
         },
       ],
@@ -88,7 +88,7 @@ describe('notify-feishu-release', () => {
     });
 
     const text = JSON.stringify(payload);
-    assert.match(text, /\[mobile-app-1\.0\.2-112-cn-android\.apk\]\(https:\/\/cdn\.example\.com\/ottermind\/mobile\/android\/ottermind_Android_1\.0\.2-112\.apk\)/);
+    assert.match(text, /\[mobile-app-1\.0\.2-112-cn-android\.apk\]\(https:\/\/cdn\.ottermind\.ai\/mobile\/appUpdate\/ottermind_Android_1\.0\.2-112\.apk\)/);
     assert.match(text, /\[#18\]/);
     assert.doesNotMatch(text, /产物列表/);
     assert.doesNotMatch(text, /OSS 上传/);
@@ -106,7 +106,22 @@ describe('notify-feishu-release', () => {
     });
 
     const text = JSON.stringify(payload);
-    assert.match(text, /\[mobile-app-1\.0\.7-112-cn-android\.apk\]\(https:\/\/cdn\.chat2db-ai\.com\/ottermind\/mobile\/android\/ottermind_Android_1\.0\.7-112\.apk\)/);
+    assert.match(text, /\[mobile-app-1\.0\.7-112-cn-android\.apk\]\(https:\/\/cdn\.ottermind\.ai\/mobile\/appUpdate\/ottermind_Android_1\.0\.7-112\.apk\)/);
+  });
+
+  test('uses the global APK naming in the R2 fallback link', () => {
+    const payload = buildFeishuCardPayload({
+      artifactName: 'mobile-app-1.0.7-124-production-android.apk',
+      jobResults: ['success'],
+      platform: 'android',
+      target: 'production',
+      version: '1.0.7',
+      buildNumber: '124',
+    });
+    assert.match(
+      JSON.stringify(payload),
+      /https:\/\/cdn\.ottermind\.ai\/mobile\/appUpdate\/ottermind_Android_global_1\.0\.7-124\.apk/,
+    );
   });
 
   test('links ios artifact to App Store Connect TestFlight', () => {

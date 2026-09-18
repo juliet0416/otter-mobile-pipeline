@@ -84,10 +84,10 @@ env:
   UPLOAD_PRIVATE_RELEASE: ${{ github.event.client_payload.upload_private_release || inputs.upload_private_release }}
   FEISHU_RELEASE_WEBHOOK_URL: ${{ vars.FEISHU_RELEASE_WEBHOOK_URL || secrets.FEISHU_RELEASE_WEBHOOK_URL }}
   FEISHU_RELEASE_WEBHOOK_SECRET: ${{ secrets.FEISHU_RELEASE_WEBHOOK_SECRET || vars.FEISHU_RELEASE_WEBHOOK_SECRET }}
-  ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET || secrets.ALIYUN_OSS_BUCKET || 'chat2db-cdn' }}
-  ALIYUN_OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT || secrets.ALIYUN_OSS_ENDPOINT }}
-  ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX || 'ottermind/mobile/android' }}
-  ALIYUN_OSS_PUBLIC_BASE_URL: ${{ vars.ALIYUN_OSS_PUBLIC_BASE_URL }}
+  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+  R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME || 'ottermind' }}
+  R2_OBJECT_PREFIX: ${{ vars.R2_OBJECT_PREFIX || 'mobile/appUpdate' }}
+  R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL || 'https://cdn.ottermind.ai' }}
 
 jobs:
   prepare:
@@ -307,38 +307,40 @@ jobs:
             -R "${{ env.SOURCE_REPO }}" \
             --clobber
 
-      - name: Resolve OSS upload target
-        id: oss
+      - name: Resolve R2 upload target
+        id: r2
         env:
-          OSS_ARTIFACT_NAME: ${{ matrix.release.artifact_name }}
-          OSS_ARTIFACT_PATH: ${{ steps.collect.outputs.artifact_path }}
-          OSS_ARTIFACT_TYPE: ${{ matrix.release.artifact_type }}
-          OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          OSS_BUILD_NUMBER: ${{ matrix.release.build_number }}
-          OSS_BUCKET: ${{ env.ALIYUN_OSS_BUCKET }}
-          OSS_ENDPOINT: ${{ env.ALIYUN_OSS_ENDPOINT }}
-          OSS_PREFIX: ${{ env.ALIYUN_OSS_PREFIX }}
-          OSS_PUBLIC_BASE_URL: ${{ env.ALIYUN_OSS_PUBLIC_BASE_URL }}
-          OSS_TARGET: ${{ matrix.release.target }}
-          OSS_VERSION: ${{ matrix.release.version }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ env.R2_ACCOUNT_ID }}
+          R2_ARTIFACT_NAME: ${{ matrix.release.artifact_name }}
+          R2_ARTIFACT_PATH: ${{ steps.collect.outputs.artifact_path }}
+          R2_ARTIFACT_TYPE: ${{ matrix.release.artifact_type }}
+          R2_BUILD_NUMBER: ${{ matrix.release.build_number }}
+          R2_BUCKET_NAME: ${{ env.R2_BUCKET_NAME }}
+          R2_ENDPOINT: https://${{ env.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_OBJECT_PREFIX: ${{ env.R2_OBJECT_PREFIX }}
+          R2_PUBLIC_BASE_URL: ${{ env.R2_PUBLIC_BASE_URL }}
+          R2_TARGET: ${{ matrix.release.target }}
+          R2_VERSION: ${{ matrix.release.version }}
         run: node scripts/resolve-oss-upload.mjs
 
-      - name: Upload China APK to OSS
-        id: upload_oss
-        if: steps.oss.outputs.enabled == 'true'
+      - name: Upload APK to R2
+        id: upload_r2
+        if: steps.r2.outputs.enabled == 'true'
         env:
-          OSS_ACCESS_KEY_ID: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_ID }}
-          OSS_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_OSS_ACCESS_KEY_SECRET }}
-          OSS_BUCKET: ${{ env.ALIYUN_OSS_BUCKET }}
-          OSS_ENDPOINT: ${{ steps.oss.outputs.endpoint }}
-          OSS_OBJECT_KEY: ${{ steps.oss.outputs.object_key }}
-          OSS_SOURCE: ${{ steps.oss.outputs.source }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ env.R2_ACCOUNT_ID }}
+          R2_BUCKET_NAME: ${{ env.R2_BUCKET_NAME }}
+          R2_OBJECT_KEY: ${{ steps.r2.outputs.object_key }}
+          R2_LATEST_OBJECT_KEY: ${{ steps.r2.outputs.latest_object_key }}
+          R2_SOURCE: ${{ steps.r2.outputs.source }}
         run: node scripts/upload-oss-artifact.mjs
 
-      - name: Skip OSS upload
-        if: steps.oss.outputs.enabled != 'true'
-        run: echo "${{ steps.oss.outputs.reason }}"
+      - name: Skip R2 upload
+        if: steps.r2.outputs.enabled != 'true'
+        run: echo "${{ steps.r2.outputs.reason }}"
 
       - name: Write Android release summary
         if: always()
@@ -346,10 +348,10 @@ jobs:
         env:
           RELEASE_ITEM_JSON: ${{ toJson(matrix.release) }}
           BUILD_RESULT: ${{ job.status }}
-          OSS_UPLOAD: ${{ steps.oss.outputs.enabled }}
-          OSS_UPLOAD_RESULT: ${{ steps.upload_oss.outcome }}
-          OSS_DESTINATION: ${{ steps.oss.outputs.destination }}
-          OSS_PUBLIC_URL: ${{ steps.oss.outputs.public_url }}
+          R2_UPLOAD: ${{ steps.r2.outputs.enabled }}
+          R2_UPLOAD_RESULT: ${{ steps.upload_r2.outcome }}
+          R2_DESTINATION: ${{ steps.r2.outputs.destination }}
+          R2_PUBLIC_URL: ${{ steps.r2.outputs.public_url }}
         run: |
           set -euo pipefail
           mkdir -p .private/release-summaries
@@ -363,11 +365,11 @@ jobs:
             buildNumber: item.build_number,
             buildResult: process.env.BUILD_RESULT || 'unknown',
             submitToStore: item.submit_to_store === 'true',
-            ossUpload: process.env.OSS_UPLOAD === 'true'
-              ? String(process.env.OSS_UPLOAD_RESULT === 'success')
-              : process.env.OSS_UPLOAD || '',
-            ossDestination: process.env.OSS_DESTINATION || '',
-            ossPublicUrl: process.env.OSS_PUBLIC_URL || '',
+            r2Upload: process.env.R2_UPLOAD === 'true'
+              ? String(process.env.R2_UPLOAD_RESULT === 'success')
+              : process.env.R2_UPLOAD || '',
+            r2Destination: process.env.R2_DESTINATION || '',
+            r2PublicUrl: process.env.R2_PUBLIC_URL || '',
           };
           const fileName = `${item.target}-${item.artifact_type}.json`.replace(/[^A-Za-z0-9._-]+/g, '-');
           fs.writeFileSync(`.private/release-summaries/${fileName}`, `${JSON.stringify(summary, null, 2)}\n`);
