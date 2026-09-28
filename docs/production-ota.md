@@ -4,21 +4,25 @@
 
 安装包仍使用现有 Mobile iOS Release / Mobile Android Release。新增 **Mobile OTA Update** 只负责 `prod`（iOS / Android）和 `cn-prod`（Android）的 OTA。`test` 的本地测试入口保持不变。
 
-App 仓库没有改动，旧 `bun run ota` 仍会从本机发布；生产更新请使用这个新入口，避免绕过兼容性校验。
+App 仓库现可通过 `bun run ota prod` / `bun run ota cn-prod` 交互选择平台、Tag 和母包产物，填写多行说明后自动触发此工作流；生产补丁不会再从本机导出。`test` 仍从本机发布。
 
 ## 首次启用
 
 1. 评审后将本分支合并并推送流水线仓库 `main`。GitHub 的手动工作流入口需要先存在于默认分支。
 2. 在流水线仓库 Actions secrets 配置 `EXPO_TOKEN`（具有当前 Expo 项目的发布权限）。复用 `SOURCE_REPO`、`SOURCE_REPO_PAT`；Android 复用 `GOOGLE_SERVICES_PROD_JSON_BASE64`。Sentry 继续复用 `SENTRY_AUTH_TOKEN`。
-3. Expo 的 EAS `production` 环境供生产 OTA 使用。不要在这里保存与渠道冲突的 API / region / `OTTERMIND_OTA_*` 变量，尤其不要固定一个渠道供 prod、cn-prod 共用。冲突会明确报错；`OTTERMIND_OTA_RELEASE_NOTES` 由每次发布输入提供。
-4. 用新的安装包流水线构建基准包，开启 `upload_private_release`。成功后 Release 应同时有安装包和 `<安装包完整文件名>.ota.json`。记录从实际 APK/AAB/IPA 提取 runtime，并绑定安装包 SHA256。
-5. 安装此基准包再验证 OTA。现有 1.4.7 没有这份记录且存在已证实的环境漂移，不能补写一个假记录绕过校验；无需删除旧 tag。建议用新的正式版本建立基准。
+3. Expo 的 EAS `production` 环境供生产 OTA 使用。不要在这里保存与渠道冲突的 API、地区及 OTA 配置变量，尤其不要固定一个渠道供 prod、cn-prod 共用。冲突会明确报错；更新说明由每次发布输入提供。
+4. 用新的安装包流水线构建基准包，`upload_private_release` 默认开启，本地发布脚本也自动传入 `true`，无需额外调整。成功后 Release 应同时有安装包和 `<安装包完整文件名>.ota.json`。记录从实际 APK/AAB/IPA 提取 runtime，并绑定安装包 SHA256。
+5. 安装此基准包再验证 OTA。旧流水线生成、缺少这份记录的安装包不能补写假记录绕过校验；应重新构建真实母包。只修复流水线时可以使用原有 Tag 重新触发，无需删除 Tag 或提升 App 版本。
 
 Token 创建说明：https://docs.expo.dev/eas-update/github-actions/
 
 ## 发布操作
 
-先提交并推送 App 补丁代码，记下 **完整 40 位提交 SHA**。在 Actions → Mobile OTA Update → Run workflow 输入：
+推荐先提交并推送 App 补丁代码，保持工作区干净，在 `apps/mobile` 运行 `bun run ota prod`（或 `cn-prod`）。选择平台 → 目标 Tag → 安装包 → 更新说明 → 确认发布。脚本自动读取当前完整 SHA；Tag 用来选择母包基准，不会把补丁源码回退成旧 Tag。确认发布后 CI 先校验、再上传，无需手动运行两次。
+
+`bun run ota prod --verify-only` 只触发 CI 校验；`--dry-run` 只显示请求。终端“已提交”不是“发布成功”，仍需到 Actions 查看结果。
+
+需要手工操作时，在 Actions → Mobile OTA Update → Run workflow 输入：
 
 - `ref`：补丁源码 SHA，不是流水线 SHA，也不是本地未提交变更。
 - `release`：目标安装包的 Release tag，例如 `mobile-v1.4.8`。
@@ -48,6 +52,7 @@ gh workflow run mobile-ota-update.yml \
 - EAS CLI 固定 24.8.0，安装在 runner 临时目录，不进入 App 的依赖树。
 - `scripts/ota/toolchain.json` 固定音频库 0.12.2 / 预编译版本 v3.1.0 和六个压缩包 SHA256。iOS 提前准备 Pod 脚本可能获取的全部目录；Android 准备 android 与 jniLibs。禁止恢复展开后的音频库目录缓存。
 - 生产业务配置由 `setup-env.mjs` 统一；完整更新说明使用 App 已有的 `extra.otaReleaseNotes`，现有 fingerprint hook 排除说明文本。
+- Android 母包和 OTA 在计算指纹前共用 `scripts/ota/prepare-android.mjs`，提前执行 masked-view 0.3.2 的 Manifest package 删除规则，保留其余字节。依赖版本变化时停止并要求重新审查，避免 Gradle 编译中修改 node_modules 导致前后指纹漂移。该步骤仅用于 Android，不改变现有 iOS 准备流程和 recipe。
 - `record.mjs` 在构建前后计算指纹，与二进制内 runtime 比对。失败时停止 Release、R2 和商店分发；保留前后指纹诊断。记录只保存来源标识和 hash，不保存原始配置内容。
 - 发布时下载准确的二进制和记录，验证 SHA256、版本、平台、渠道、准备流程 hash、Node/Bun/OS/CPU 架构与 runtime。导出前后均检查，通过后用 `--skip-bundler` 上传同一份导出。
 - runner 使用 macos-26 / ubuntu-24.04；托管镜像仍会更新，所以最终以真实二进制与候选指纹一致为准，不能把 runner 标签视为永久不变的镜像。
@@ -55,6 +60,8 @@ gh workflow run mobile-ota-update.yml \
 更改准备流程或工具版本后会触发 recipe 不匹配，需要新母包或经独立审计的兼容方案。不会强行覆盖 runtime，不会忽略整个 node_modules。App 原生能力、插件或权限变化需要重打安装包。
 
 ## 失败处理
+
+2026-09-28 的 Android 1.4.7 三个任务均已编译成功，随后因 masked-view 的 Manifest 编译中被改写而未通过指纹校验。修复合入 main 后，应重新触发相同 Tag 的 Android 构建，让新运行使用最新流水线；不要点旧运行的 Re-run（它会使用旧工作流提交）。不必删除 Tag 或更改 App 版本。此前成功的 iOS 不需要因本次 Android 修复重建。
 
 - 缺少 `.ota.json`：使用新流水线重建安装包；不要手工制造记录。
 - `runtimeVersion` 不匹配：查诊断中的来源变化，区分真实原生变更与准备环境漂移。

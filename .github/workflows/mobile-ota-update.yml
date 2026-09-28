@@ -80,6 +80,10 @@ jobs:
         uses: ./.github/actions/prepare-mobile
         with:
           platform: ${{ inputs.platform }}
+      - name: Normalize Android dependency manifest
+        if: inputs.platform == 'android'
+        run: node scripts/ota/prepare-android.mjs source
+
       - name: Load canonical production configuration
         env:
           OTA_CHANNEL: ${{ inputs.channel }}

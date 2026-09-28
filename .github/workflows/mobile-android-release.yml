@@ -169,6 +169,9 @@ jobs:
         with:
           platform: android
 
+      - name: Normalize Android dependency manifest
+        run: node scripts/ota/prepare-android.mjs source
+
       - name: Load canonical production configuration
         if: env.OTTERMIND_OTA_ENABLED == '1'
         env:
