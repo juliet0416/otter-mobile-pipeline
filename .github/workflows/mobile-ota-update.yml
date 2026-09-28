@@ -76,6 +76,34 @@ jobs:
           token: ${{ secrets.SOURCE_REPO_PAT }}
           path: source
           persist-credentials: false
+      # 只恢复下载缓存；保持共享准备配方及干净 node_modules 不变，兼容已发布母包。
+      - name: Restore package download cache
+        id: downloads
+        uses: actions/cache@v4
+        continue-on-error: true
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
+        with:
+          path: |
+            ~/.bun/install/cache
+            ~/.npm/_cacache
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ota-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ota/toolchain.json') }}-${{ hashFiles('source/bun.lock') }}
+          restore-keys: |
+            ota-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ota/toolchain.json') }}-
+      - name: Report download cache status
+        env:
+          CACHE_HIT: ${{ steps.downloads.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo '### OTA 下载缓存：精确命中' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### OTA 下载缓存：未精确命中（首次运行或依赖变更，缺失文件会重新下载）' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '仍执行 frozen-lockfile 干净安装和完整指纹校验；不恢复 node_modules。' >> "$GITHUB_STEP_SUMMARY"
       - name: Prepare shared mobile dependencies
         uses: ./.github/actions/prepare-mobile
         with:
@@ -101,7 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           EAS_VERSION=$(node -p "JSON.parse(require('fs').readFileSync('scripts/ota/toolchain.json')).eas")
-          npm install --prefix "$RUNNER_TEMP/ota-eas" --no-audit --no-fund "eas-cli@$EAS_VERSION"
+          npm install --prefix "$RUNNER_TEMP/ota-eas" --prefer-offline --no-audit --no-fund "eas-cli@$EAS_VERSION"
           echo "$RUNNER_TEMP/ota-eas/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Check, export and optionally publish
         working-directory: source/apps/mobile

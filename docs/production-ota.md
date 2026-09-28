@@ -60,6 +60,16 @@ gh workflow run mobile-ota-update.yml \
 
 更改准备流程或工具版本后会触发 recipe 不匹配，需要新母包或经独立审计的兼容方案。不会强行覆盖 runtime，不会忽略整个 node_modules。App 原生能力、插件或权限变化需要重打安装包。
 
+## OTA 下载缓存与耗时
+
+生产 OTA 在 `Prepare shared mobile dependencies` 之前恢复 Bun、npm 和 Electron 下载缓存。缓存按 runner 系统、CPU 架构、固定工具链及源码锁文件分组；依赖变化时可复用同一工具链下的下载，仍按当前冻结锁文件安装。缓存服务不可用时退回正常下载，Actions Summary 显示是否精确命中。
+
+仅缓存包管理器及 Electron 的下载目录，不缓存 App 的 `node_modules`、生成的原生目录、签名材料或 `.private` 数据。共享准备 action、原生准备脚本及 recipe hash 不变，因此本次优化不会要求已经验证兼容的母包重建。npm 安装固定 EAS CLI 时优先使用下载缓存；不改变 EAS 版本。
+
+首次运行需要填充缓存；同环境后续发布才能看到收益。安装脚本、prebuild、导出前后指纹及真实二进制校验仍完整执行；Metro 继续干净导出并用 `--skip-bundler` 上传同一份产物。
+
+优化前参考：2026-09-28 iOS prod 任务 36423869985 总耗时 9 分 44 秒，安装 3,230 个包耗时约 288 秒，原生压缩包准备约 5 秒，EAS CLI 安装约 36 秒，Metro 打包约 138 秒。不要把整个依赖步骤的耗时归因于原生压缩包下载。优化后的耗时需合入后分别记录冷缓存与热缓存运行，不以静态测试结果宣称性能提升。
+
 ## 失败处理
 
 2026-09-28 的 Android 1.4.7 三个任务均已编译成功，随后因 masked-view 的 Manifest 编译中被改写而未通过指纹校验。修复合入 main 后，应重新触发相同 Tag 的 Android 构建，让新运行使用最新流水线；不要点旧运行的 Re-run（它会使用旧工作流提交）。不必删除 Tag 或更改 App 版本。此前成功的 iOS 不需要因本次 Android 修复重建。
