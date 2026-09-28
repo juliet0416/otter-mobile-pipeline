@@ -129,6 +129,11 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # 生产母包在 prebuild 和编译阶段共享 OTA 配置；Play 轨道不决定 OTA 渠道。
+    env:
+      OTTERMIND_OTA_ENABLED: ${{ matrix.release.release_env == 'production' && '1' || '0' }}
+      OTTERMIND_OTA_TARGET: ${{ matrix.release.target == 'cn' && 'cn-apk' || 'global' }}
+      OTTERMIND_OTA_UPDATE_URL: https://u.expo.dev/d6f72c0c-f638-4b0b-8524-53df9b6a8838
     strategy:
       fail-fast: false
       matrix:

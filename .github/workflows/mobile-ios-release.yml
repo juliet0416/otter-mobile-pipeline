@@ -102,6 +102,11 @@ jobs:
     needs: prepare
     runs-on: macos-26
     timeout-minutes: 120
+    # 生产母包在 prebuild 和编译阶段共享 OTA 配置；Play 轨道不决定 OTA 渠道。
+    env:
+      OTTERMIND_OTA_ENABLED: ${{ needs.prepare.outputs.release_env == 'production' && '1' || '0' }}
+      OTTERMIND_OTA_TARGET: global
+      OTTERMIND_OTA_UPDATE_URL: https://u.expo.dev/d6f72c0c-f638-4b0b-8524-53df9b6a8838
     steps:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
