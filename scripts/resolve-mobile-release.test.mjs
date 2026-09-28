@@ -111,6 +111,22 @@ describe('resolve-mobile-release', () => {
     assert.equal(result.outputs.android_artifact_name, 'mobile-app-1.2.3-110-internal-android.aab');
   });
 
+  it('uses the OTA API origin for a standalone CN APK build', () => {
+    const result = runResolve({
+      MOBILE_PLATFORM: 'android',
+      MOBILE_SOURCE_REF: 'mobile-v1.2.3',
+      MOBILE_TARGET: 'cn',
+      MOBILE_ARTIFACT_TYPE: 'apk',
+      MOBILE_BUILD_NUMBER: '108',
+    });
+
+    assert.equal(result.status, 0);
+    assert.equal(result.outputs.expo_public_region, 'cn');
+    assert.equal(result.outputs.expo_public_api_base_url, 'https://api.ottermind.cn');
+    const [item] = JSON.parse(result.outputs.matrix);
+    assert.equal(item.expo_public_api_base_url, 'https://api.ottermind.cn');
+  });
+
   it('resolves Android batch items for one workflow run', () => {
     const result = runResolve({
       MOBILE_SOURCE_REF: 'mobile-v1.2.3',
@@ -128,6 +144,8 @@ describe('resolve-mobile-release', () => {
     assert.equal(matrix.length, 3);
     assert.equal(matrix[0].artifact_name, 'mobile-app-1.2.3-108-internal-android.aab');
     assert.equal(matrix[1].artifact_name, 'mobile-app-1.2.3-108-cn-android.apk');
+    assert.equal(matrix[1].expo_public_region, 'cn');
+    assert.equal(matrix[1].expo_public_api_base_url, 'https://api.ottermind.cn');
     assert.equal(matrix[2].artifact_name, 'mobile-app-1.2.3-108-production-android.apk');
     assert.equal(matrix[2].expo_public_region, 'global');
     assert.equal(matrix[2].expo_public_api_base_url, 'https://api.ottermind.ai');

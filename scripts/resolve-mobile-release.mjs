@@ -24,7 +24,7 @@ const targetConfig = {
     androidReleaseStatus: 'completed',
     prerelease: 'true',
     region: 'cn',
-    apiBaseUrl: 'https://api.ottermind.cn/',
+    apiBaseUrl: 'https://api.ottermind.cn',
   },
 };
 
