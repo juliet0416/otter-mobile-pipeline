@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,7 +21,22 @@ export function prepareAndroidManifest(sourceRoot) {
   console.log('[OTA] Android masked-view Manifest 已固定为 Gradle 编译时状态');
 }
 //#endregion
+
+//#region 排除编译期间的 Kotlin 临时缓存，不排除插件源码
+export function prepareAndroidFingerprint(sourceRoot) {
+  const file = path.resolve(sourceRoot, 'apps/mobile/.fingerprintignore');
+  const pattern = '**/expo-updates-gradle-plugin/.kotlin/**/*';
+  const contents = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  // Expo 原有规则已排除 build/.gradle，但未排除此插件的 .kotlin 会话文件。
+  // 规则仅写入 Android CI checkout；打包与 OTA 读取同一规则，iOS 不执行。
+  if (!contents.split(/\r?\n/).some(line => line.trim() === pattern)) {
+    writeFileSync(file, `${contents}${contents && !contents.endsWith('\n') ? '\n' : ''}${pattern}\n`);
+  }
+  console.log('[OTA] 指纹仅排除 expo-updates Gradle 插件的 .kotlin 构建缓存');
+}
+//#endregion
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (!process.argv[2]) throw new Error('Expected source checkout path');
   prepareAndroidManifest(process.argv[2]);
+  prepareAndroidFingerprint(process.argv[2]);
 }

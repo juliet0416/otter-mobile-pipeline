@@ -1,4 +1,6 @@
 import { test } from 'node:test';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -44,3 +46,10 @@ test('binary and OTA workflows normalize before any runtime capture or export; i
   assert.match(ota, /name: Normalize Android dependency manifest\n\s+if: inputs.platform == 'android'\n\s+run: node scripts\/ota\/prepare-android.mjs source/);
   assert.ok(!ios.includes(call));
 });
+
+test('workflow CLI prepares both the manifest and build-time fingerprint ignore rule', () => fixture(({ root, manifest }) => {
+  mkdirSync(path.join(root, 'apps/mobile'), { recursive: true });
+  execFileSync(process.execPath, [fileURLToPath(new URL('./prepare-android.mjs', import.meta.url)), root]);
+  assert.equal(readFileSync(manifest, 'utf8'), original.replaceAll('package="org.reactnative.maskedview"', ''));
+  assert.equal(readFileSync(path.join(root, 'apps/mobile/.fingerprintignore'), 'utf8'), '**/expo-updates-gradle-plugin/.kotlin/**/*\n');
+}));

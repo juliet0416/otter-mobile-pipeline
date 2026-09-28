@@ -53,6 +53,7 @@ gh workflow run mobile-ota-update.yml \
 - `scripts/ota/toolchain.json` 固定音频库 0.12.2 / 预编译版本 v3.1.0 和六个压缩包 SHA256。iOS 提前准备 Pod 脚本可能获取的全部目录；Android 准备 android 与 jniLibs。禁止恢复展开后的音频库目录缓存。
 - 生产业务配置由 `setup-env.mjs` 统一；完整更新说明使用 App 已有的 `extra.otaReleaseNotes`，现有 fingerprint hook 排除说明文本。
 - Android 母包和 OTA 在计算指纹前共用 `scripts/ota/prepare-android.mjs`，提前执行 masked-view 0.3.2 的 Manifest package 删除规则，保留其余字节。依赖版本变化时停止并要求重新审查，避免 Gradle 编译中修改 node_modules 导致前后指纹漂移。该步骤仅用于 Android，不改变现有 iOS 准备流程和 recipe。
+- Android 准备步骤还会在 CI checkout 的 `.fingerprintignore` 中精确排除 `**/expo-updates-gradle-plugin/.kotlin/**/*`。Kotlin 随机会话文件在编译期间存在、编译后清除，不能参与原生兼容性指纹；插件源码仍完整参与，母包与 OTA 共用规则，iOS 不受影响。无需修改 App 源码或移动原有 Tag。
 - `record.mjs` 在构建前后计算指纹，与二进制内 runtime 比对。失败时停止 Release、R2 和商店分发；保留前后指纹诊断。记录只保存来源标识和 hash，不保存原始配置内容。
 - 发布时下载准确的二进制和记录，验证 SHA256、版本、平台、渠道、准备流程 hash、Node/Bun/OS/CPU 架构与 runtime。导出前后均检查，通过后用 `--skip-bundler` 上传同一份导出。
 - runner 使用 macos-26 / ubuntu-24.04；托管镜像仍会更新，所以最终以真实二进制与候选指纹一致为准，不能把 runner 标签视为永久不变的镜像。
@@ -71,6 +72,8 @@ gh workflow run mobile-ota-update.yml \
 - “验证通过”只证明准备与导出兼容性，不替代真机功能回归，也不等于已发布。
 
 ## 本地验证命令
+
+真实 Expo 回归使用已有依赖的源码 checkout：`OTA_TEST_SOURCE_ROOT=/path/to/app-repo node --test scripts/ota/android-fingerprint.test.mjs`。覆盖编译前、临时会话存在/改名、编译后清除、真实 Kotlin 源码变化；默认无源码路径时会跳过该集成项。
 
 ```bash
 node --test scripts/*.test.mjs scripts/ota/*.test.mjs
