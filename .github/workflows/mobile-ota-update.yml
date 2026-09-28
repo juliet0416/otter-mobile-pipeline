@@ -1,0 +1,123 @@
+name: Mobile OTA Update
+run-name: OTA ${{ inputs.channel }} / ${{ inputs.platform }} · ${{ inputs.dry_run && 'verify' || 'publish' }}
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '补丁源码完整 commit SHA（40 位，先提交并推送 App 代码）'
+        required: true
+        type: string
+      release:
+        description: '目标安装包的 Release tag，例如 mobile-v1.4.8'
+        required: true
+        type: string
+      artifact:
+        description: 'Release 中完整 APK / AAB / IPA 文件名，需要同名 .ota.json 记录'
+        required: true
+        type: string
+      channel:
+        description: '生产更新渠道'
+        required: true
+        type: choice
+        options: [prod, cn-prod]
+      platform:
+        description: '安装包平台'
+        required: true
+        type: choice
+        options: [ios, android]
+      message:
+        description: '更新说明（支持真实换行；命令行可用 -F message=@文件）'
+        required: true
+        type: string
+      dry_run:
+        description: '仅校验兼容性并导出，不上传 Expo（首次请保持开启）'
+        default: true
+        required: true
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: mobile-ota-${{ inputs.channel }}-${{ inputs.platform }}
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ${{ inputs.platform == 'ios' && 'macos-26' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    env:
+      SOURCE_REPO: ${{ secrets.SOURCE_REPO }}
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+    steps:
+      - name: Checkout pipeline
+        uses: actions/checkout@v4
+      - name: Validate update inputs
+        env:
+          OTA_REF: ${{ inputs.ref }}
+          OTA_RELEASE: ${{ inputs.release }}
+          OTA_ARTIFACT: ${{ inputs.artifact }}
+          OTA_CHANNEL: ${{ inputs.channel }}
+          OTA_PLATFORM: ${{ inputs.platform }}
+          OTA_MESSAGE: ${{ inputs.message }}
+          OTA_DRY_RUN: ${{ inputs.dry_run }}
+        run: node scripts/ota/inputs.mjs
+      - name: Validate Expo token
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: test -n "$EXPO_TOKEN" || { echo 'EXPO_TOKEN required for EAS production environment and publication' >&2; exit 1; }
+      - name: Verify target release binary and baseline
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
+        run: node scripts/ota/download-baseline.mjs
+      - name: Checkout exact update source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_REPO_PAT }}
+          path: source
+          persist-credentials: false
+      - name: Prepare shared mobile dependencies
+        uses: ./.github/actions/prepare-mobile
+        with:
+          platform: ${{ inputs.platform }}
+      - name: Load canonical production configuration
+        env:
+          OTA_CHANNEL: ${{ inputs.channel }}
+        run: node scripts/ota/setup-env.mjs "$OTA_CHANNEL"
+      - name: Restore Android Firebase configuration
+        if: inputs.platform == 'android'
+        env:
+          GOOGLE_SERVICES_PROD_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_PROD_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$GOOGLE_SERVICES_PROD_JSON_BASE64" || { echo 'GOOGLE_SERVICES_PROD_JSON_BASE64 required' >&2; exit 1; }
+          mkdir -p source/apps/mobile/secrets
+          printf '%s' "$GOOGLE_SERVICES_PROD_JSON_BASE64" | base64 --decode > source/apps/mobile/secrets/google-services-prod.json
+      - name: Install pinned EAS CLI
+        run: |
+          set -euo pipefail
+          EAS_VERSION=$(node -p "JSON.parse(require('fs').readFileSync('scripts/ota/toolchain.json')).eas")
+          npm install --prefix "$RUNNER_TEMP/ota-eas" --no-audit --no-fund "eas-cli@$EAS_VERSION"
+          echo "$RUNNER_TEMP/ota-eas/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Check, export and optionally publish
+        working-directory: source/apps/mobile
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas env:exec production 'node "$GITHUB_WORKSPACE/scripts/ota/publish.mjs"' --non-interactive
+      - name: Upload compatibility diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: ota-diagnostics-${{ inputs.channel }}-${{ inputs.platform }}-${{ github.run_id }}
+          path: |
+            .private/ota-candidate.json
+            .private/ota-publish-result.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf .private
+          rm -f source/apps/mobile/secrets/google-services-prod.json

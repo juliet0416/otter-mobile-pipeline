@@ -107,6 +107,9 @@ jobs:
       OTTERMIND_OTA_ENABLED: ${{ needs.prepare.outputs.release_env == 'production' && '1' || '0' }}
       OTTERMIND_OTA_TARGET: global
       OTTERMIND_OTA_UPDATE_URL: https://u.expo.dev/d6f72c0c-f638-4b0b-8524-53df9b6a8838
+      EXPO_NO_DOTENV: '1'
+      EXPO_PUBLIC_APP_CHANNEL: production
+      EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
     steps:
       - name: Checkout pipeline repo
         uses: actions/checkout@v4
@@ -128,15 +131,16 @@ jobs:
           token: ${{ secrets.SOURCE_REPO_PAT }}
           path: source
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Prepare shared mobile dependencies
+        uses: ./.github/actions/prepare-mobile
         with:
-          bun-version: '1.3.6'
+          platform: ios
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+      - name: Load canonical production configuration
+        if: env.OTTERMIND_OTA_ENABLED == '1'
+        env:
+          OTA_CHANNEL: prod
+        run: node scripts/ota/setup-env.mjs "$OTA_CHANNEL"
 
       - name: Setup Ruby for Fastlane
         uses: ruby/setup-ruby@v1
@@ -166,97 +170,6 @@ jobs:
             "$HOME/Library/Caches/CocoaPods" \
             "$HOME/Library/Caches/org.swift.swiftpm" \
             "$RUNNER_TEMP/ios-derived-data/SourcePackages"
-
-      - name: Restore Bun package cache
-        if: needs.prepare.outputs.clear_cache != 'true'
-        continue-on-error: true
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ios-bun-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
-          restore-keys: |
-            ios-bun-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-
-            ios-bun-${{ runner.os }}-
-
-      - name: Install JS dependencies
-        working-directory: source
-        run: bun install --frozen-lockfile
-
-      - name: Restore RNAudioAPI iOS prebuilt cache
-        if: needs.prepare.outputs.clear_cache != 'true'
-        continue-on-error: true
-        uses: actions/cache/restore@v4
-        with:
-          path: source/node_modules/react-native-audio-api/common/cpp/audioapi/external
-          key: ios-rnaudioapi-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
-          restore-keys: |
-            ios-rnaudioapi-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-
-            ios-rnaudioapi-${{ runner.os }}-
-
-      - name: Ensure RNAudioAPI iOS prebuilt binaries
-        working-directory: source/node_modules/react-native-audio-api
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          required_files=(
-            common/cpp/audioapi/external/iphoneos/libogg.a
-            common/cpp/audioapi/external/iphoneos/libopus.a
-            common/cpp/audioapi/external/iphoneos/libopusfile.a
-            common/cpp/audioapi/external/iphoneos/libvorbis.a
-            common/cpp/audioapi/external/iphoneos/libvorbisenc.a
-            common/cpp/audioapi/external/iphoneos/libvorbisfile.a
-          )
-          required_dirs=(
-            common/cpp/audioapi/external/ffmpeg_ios/libavcodec.xcframework
-            common/cpp/audioapi/external/ffmpeg_ios/libavformat.xcframework
-            common/cpp/audioapi/external/ffmpeg_ios/libavutil.xcframework
-            common/cpp/audioapi/external/ffmpeg_ios/libswresample.xcframework
-          )
-
-          missing=false
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              missing=true
-              break
-            fi
-          done
-          if [ "$missing" = false ]; then
-            for dir in "${required_dirs[@]}"; do
-              if [ ! -d "$dir" ]; then
-                missing=true
-                break
-              fi
-            done
-          fi
-
-          if [ "$missing" = true ]; then
-            chmod +x scripts/download-prebuilt-binaries.sh
-            scripts/download-prebuilt-binaries.sh ios
-          fi
-
-          for file in "${required_files[@]}"; do
-            test -f "$file" || (echo "Missing RNAudioAPI prebuilt binary: $file" >&2; exit 1)
-          done
-          for dir in "${required_dirs[@]}"; do
-            test -d "$dir" || (echo "Missing RNAudioAPI prebuilt framework: $dir" >&2; exit 1)
-          done
-
-      - name: Save RNAudioAPI iOS prebuilt cache
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: source/node_modules/react-native-audio-api/common/cpp/audioapi/external
-          key: ios-rnaudioapi-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
-
-      - name: Save Bun package cache
-        if: always()
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.bun/install/cache
-          key: ios-bun-${{ runner.os }}-${{ hashFiles('source/bun.lock', 'source/bun.lockb', 'source/package.json') }}-${{ steps.ios-cache.outputs.run_suffix }}
 
       - name: Validate Expo iOS toolchain
         working-directory: source/apps/mobile
@@ -295,9 +208,6 @@ jobs:
       - name: Generate iOS native project
         working-directory: source/apps/mobile
         env:
-          EXPO_NO_DOTENV: '1'
-          EXPO_PUBLIC_APP_CHANNEL: production
-          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: bunx expo prebuild --platform ios --clean --no-install
 
@@ -426,6 +336,12 @@ jobs:
             ios-derived-data-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-${{ hashFiles('source/bun.lock', 'source/apps/mobile/ios/Podfile.lock') }}-
             ios-derived-data-${{ runner.os }}-${{ steps.ios-cache.outputs.xcode_hash }}-
 
+      - name: Capture OTA runtime before compilation
+        if: env.OTTERMIND_OTA_ENABLED == '1'
+        env:
+          OTA_CHANNEL: prod
+        run: node scripts/ota/record.mjs snapshot source/apps/mobile ios "$OTA_CHANNEL" .private/ota-before.json
+
       - name: Build signed IPA
         env:
           MOBILE_APP_ROOT: ${{ github.workspace }}/source/apps/mobile
@@ -443,9 +359,6 @@ jobs:
           IOS_APP_BUNDLE_ID: ${{ secrets.IOS_APP_BUNDLE_ID }}
           IOS_WIDGET_BUNDLE_ID: ${{ secrets.IOS_WIDGET_BUNDLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          EXPO_NO_DOTENV: '1'
-          EXPO_PUBLIC_APP_CHANNEL: production
-          EXPO_PUBLIC_RELEASE_ENV: ${{ needs.prepare.outputs.release_env }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
           mkdir -p .private/artifacts "$IOS_BUILD_LOG_DIR" "$IOS_DERIVED_DATA_PATH"
@@ -496,10 +409,31 @@ jobs:
             source/apps/mobile/ios/Pods/Target Support Files/ExpoModulesJSI
           if-no-files-found: ignore
 
+      - name: Verify actual binary and record OTA compatibility
+        if: env.OTTERMIND_OTA_ENABLED == '1'
+        env:
+          OTA_CHANNEL: prod
+          OTA_BINARY: .private/artifacts/${{ needs.prepare.outputs.artifact_name }}
+        run: node scripts/ota/record.mjs record source/apps/mobile ios "$OTA_CHANNEL" .private/ota-before.json "$OTA_BINARY"
+
+      - name: Save OTA build diagnostics
+        if: always() && env.OTTERMIND_OTA_ENABLED == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: ota-build-ios-production
+          path: |
+            .private/ota-before.json
+            .private/ota-after.json
+            .private/artifacts/*.ota.json
+          if-no-files-found: ignore
+          retention-days: 90
+
       - name: Upload IPA to source repo release
         if: needs.prepare.outputs.upload_private_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
+          OTA_BINARY: .private/artifacts/${{ needs.prepare.outputs.artifact_name }}
         run: |
           set -euo pipefail
           prerelease_flag=""
@@ -516,6 +450,10 @@ jobs:
             ".private/artifacts/${{ needs.prepare.outputs.artifact_name }}" \
             -R "${{ env.SOURCE_REPO }}" \
             --clobber
+
+          if [ "$OTTERMIND_OTA_ENABLED" = "1" ]; then
+            gh release upload "${{ needs.prepare.outputs.safe_ref }}" "$OTA_BINARY.ota.json" -R "$SOURCE_REPO" --clobber
+          fi
 
       - name: Upload IPA to App Store Connect/TestFlight
         if: needs.prepare.outputs.submit_to_store == 'true'

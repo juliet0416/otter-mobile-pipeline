@@ -1,0 +1,44 @@
+name: Prepare reproducible mobile dependencies
+description: Clean locked install and verified native archives for both binaries and OTA
+inputs:
+  platform:
+    required: true
+    description: ios or android
+  source:
+    default: source
+    description: Fresh source checkout path
+runs:
+  using: composite
+  steps:
+    - name: Read pinned toolchain
+      id: tools
+      shell: bash
+      run: |
+        node - <<'NODE'
+        const fs = require('fs');
+        const tools = JSON.parse(fs.readFileSync('scripts/ota/toolchain.json'));
+        fs.appendFileSync(process.env.GITHUB_OUTPUT, `node=${tools.node}\nbun=${tools.bun}\n`);
+        NODE
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ steps.tools.outputs.bun }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ steps.tools.outputs.node }}
+    - name: Install exact locked dependencies
+      shell: bash
+      working-directory: ${{ inputs.source }}
+      env:
+        NODE_ENV: development
+      run: |
+        set -euo pipefail
+        test ! -e node_modules || { echo 'Fresh checkout required: node_modules already exists' >&2; exit 1; }
+        test -z "$(git status --porcelain --untracked-files=no)" || { echo 'Source checkout must be clean before preparation' >&2; exit 1; }
+        bun install --frozen-lockfile --backend=copyfile
+        git diff --exit-code -- bun.lock package.json
+    - name: Prepare verified native prebuilts
+      shell: bash
+      env:
+        SOURCE_DIR: ${{ inputs.source }}
+        NATIVE_PLATFORM: ${{ inputs.platform }}
+      run: node scripts/ota/prepare-native.mjs "$SOURCE_DIR" "$NATIVE_PLATFORM"

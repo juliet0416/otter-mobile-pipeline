@@ -127,13 +127,18 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     # 生产母包在 prebuild 和编译阶段共享 OTA 配置；Play 轨道不决定 OTA 渠道。
     env:
       OTTERMIND_OTA_ENABLED: ${{ matrix.release.release_env == 'production' && '1' || '0' }}
       OTTERMIND_OTA_TARGET: ${{ matrix.release.target == 'cn' && 'cn-apk' || 'global' }}
       OTTERMIND_OTA_UPDATE_URL: https://u.expo.dev/d6f72c0c-f638-4b0b-8524-53df9b6a8838
+      EXPO_NO_DOTENV: '1'
+      EXPO_PUBLIC_APP_CHANNEL: production
+      EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
+      EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
+      EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
     strategy:
       fail-fast: false
       matrix:
@@ -159,15 +164,16 @@ jobs:
           token: ${{ secrets.SOURCE_REPO_PAT }}
           path: source
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Prepare shared mobile dependencies
+        uses: ./.github/actions/prepare-mobile
         with:
-          bun-version: '1.3.6'
+          platform: android
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+      - name: Load canonical production configuration
+        if: env.OTTERMIND_OTA_ENABLED == '1'
+        env:
+          OTA_CHANNEL: ${{ matrix.release.target == 'cn' && 'cn-prod' || 'prod' }}
+        run: node scripts/ota/setup-env.mjs "$OTA_CHANNEL"
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -187,10 +193,6 @@ jobs:
         with:
           # The retired SDK tools package is no longer available from sdkmanager.
           packages: platform-tools
-
-      - name: Install JS dependencies
-        working-directory: source
-        run: bun install --frozen-lockfile
 
       - name: Restore Android signing and Firebase files
         shell: bash
@@ -220,11 +222,6 @@ jobs:
       - name: Generate Android native project
         working-directory: source/apps/mobile
         env:
-          EXPO_NO_DOTENV: '1'
-          EXPO_PUBLIC_APP_CHANNEL: production
-          EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
-          EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
-          EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: bunx expo prebuild --platform android --clean --no-install
 
@@ -259,14 +256,15 @@ jobs:
       - name: Configure Android release signing
         run: node scripts/configure-android-signing.mjs source/apps/mobile/android/app/build.gradle
 
+      - name: Capture OTA runtime before compilation
+        if: env.OTTERMIND_OTA_ENABLED == '1'
+        env:
+          OTA_CHANNEL: ${{ matrix.release.target == 'cn' && 'cn-prod' || 'prod' }}
+        run: node scripts/ota/record.mjs snapshot source/apps/mobile android "$OTA_CHANNEL" .private/ota-before.json
+
       - name: Build Android artifact
         working-directory: source/apps/mobile/android
         env:
-          EXPO_NO_DOTENV: '1'
-          EXPO_PUBLIC_APP_CHANNEL: production
-          EXPO_PUBLIC_RELEASE_ENV: ${{ matrix.release.release_env }}
-          EXPO_PUBLIC_REGION: ${{ matrix.release.expo_public_region }}
-          EXPO_PUBLIC_API_BASE_URL: ${{ matrix.release.expo_public_api_base_url }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_FILE: ci-upload.keystore
           ORG_GRADLE_PROJECT_CI_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -291,10 +289,31 @@ jobs:
           echo "artifact_path=.private/artifacts/${{ matrix.release.artifact_name }}" >> "$GITHUB_OUTPUT"
           ls -lh .private/artifacts
 
+      - name: Verify actual binary and record OTA compatibility
+        if: env.OTTERMIND_OTA_ENABLED == '1'
+        env:
+          OTA_CHANNEL: ${{ matrix.release.target == 'cn' && 'cn-prod' || 'prod' }}
+          OTA_BINARY: ${{ steps.collect.outputs.artifact_path }}
+        run: node scripts/ota/record.mjs record source/apps/mobile android "$OTA_CHANNEL" .private/ota-before.json "$OTA_BINARY"
+
+      - name: Save OTA build diagnostics
+        if: always() && env.OTTERMIND_OTA_ENABLED == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          include-hidden-files: true
+          name: ota-build-android-${{ matrix.release.target }}-${{ matrix.release.artifact_type }}
+          path: |
+            .private/ota-before.json
+            .private/ota-after.json
+            .private/artifacts/*.ota.json
+          if-no-files-found: ignore
+          retention-days: 90
+
       - name: Upload artifact to source repo release
         if: matrix.release.upload_private_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.SOURCE_REPO_PAT }}
+          OTA_BINARY: ${{ steps.collect.outputs.artifact_path }}
         run: |
           set -euo pipefail
           prerelease_flag=""
@@ -311,6 +330,10 @@ jobs:
             "${{ steps.collect.outputs.artifact_path }}" \
             -R "${{ env.SOURCE_REPO }}" \
             --clobber
+
+          if [ "$OTTERMIND_OTA_ENABLED" = "1" ]; then
+            gh release upload "${{ matrix.release.safe_ref }}" "$OTA_BINARY.ota.json" -R "$SOURCE_REPO" --clobber
+          fi
 
       - name: Resolve R2 upload target
         id: r2
