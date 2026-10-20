@@ -22,6 +22,27 @@ describe('notify-feishu-release', () => {
     assert.equal(resolveOverallStatus(['success', 'failure', 'skipped']), 'failure');
   });
 
+  test('resolves cancelled when jobs were cancelled and none failed', () => {
+    assert.equal(resolveOverallStatus(['success', 'cancelled', 'cancelled']), 'cancelled');
+  });
+
+  test('prefers failure over cancellation', () => {
+    assert.equal(resolveOverallStatus(['failure', 'cancelled', 'skipped']), 'failure');
+  });
+
+  test('builds a cancelled release card with a grey header', () => {
+    const payload = buildFeishuCardPayload({
+      jobResults: ['success', 'cancelled'],
+      platform: 'android',
+      ref: 'mobile-v1.5.0',
+      runNumber: '142',
+      runUrl: 'https://github.com/acme/pipeline/actions/runs/28355213213',
+    });
+
+    assert.equal(payload.card.header.template, 'grey');
+    assert.equal(payload.card.header.title.content, 'Android 打包已取消');
+  });
+
   test('builds an interactive release card with artifact and source ref links (aab)', () => {
     const payload = buildFeishuCardPayload({
       artifactName: 'mobile-app-1.0.2-108-internal-android.aab',
