@@ -42,17 +42,20 @@ function normalizeArtifactSummary(summary) {
 }
 
 export function resolveOverallStatus(jobResults) {
-  return jobResults.every((result) => SUCCESS_RESULTS.has(String(result ?? '').toLowerCase()))
-    ? 'success'
-    : 'failure';
+  const results = jobResults.map((result) => String(result ?? '').toLowerCase());
+  // 真实失败优先：发版被取代时附带取消的 job 不应把失败降级成「已取消」。
+  if (results.some((result) => !SUCCESS_RESULTS.has(result) && result !== 'cancelled')) {
+    return 'failure';
+  }
+  return results.includes('cancelled') ? 'cancelled' : 'success';
 }
 
 function statusText(status) {
-  return status === 'success' ? '成功' : '失败';
+  return { success: '成功', cancelled: '已取消', failure: '失败' }[status] ?? '失败';
 }
 
 function statusTemplate(status) {
-  return status === 'success' ? 'green' : 'red';
+  return { success: 'green', cancelled: 'grey', failure: 'red' }[status] ?? 'red';
 }
 
 function buildField(label, value) {

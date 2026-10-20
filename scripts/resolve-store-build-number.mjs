@@ -6,6 +6,10 @@ const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/androidpublisher';
 const GOOGLE_TOKEN_URI = 'https://oauth2.googleapis.com/token';
 const ASC_AUDIENCE = 'appstoreconnect-v1';
 const ASC_API_BASE_URL = 'https://api.appstoreconnect.apple.com';
+// Play 同一 app 只允许一个活动 edit：并发 run 的后开 edit 会让先开的 edit 失效，
+// 读 tracks 返回 400 This Edit has been deleted。重新开 edit 重试即可。
+const ANDROID_EDIT_MAX_ATTEMPTS = 5;
+const ANDROID_EDIT_RETRY_BASE_MS = 500;
 
 function fail(message) {
   console.error(`[store-build-number] ${message}`);
@@ -154,7 +158,15 @@ async function getGoogleAccessToken(fetchImpl, serviceAccount) {
   return payload.access_token;
 }
 
-async function fetchAndroidTracks(fetchImpl, env) {
+function isDiscardedAndroidEdit(error) {
+  return /This Edit has been deleted/i.test(error instanceof Error ? error.message : String(error));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchAndroidTracks(fetchImpl, env, logger = console) {
   requireEnvGroup(env, ['GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64', 'ANDROID_PACKAGE_NAME']);
   const encodedJson = requireEnv(env, 'GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64');
   const packageName = requireEnv(env, 'ANDROID_PACKAGE_NAME');
@@ -162,25 +174,39 @@ async function fetchAndroidTracks(fetchImpl, env) {
   const accessToken = await getGoogleAccessToken(fetchImpl, serviceAccount);
   const headers = { authorization: `Bearer ${accessToken}` };
   const baseUrl = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(packageName)}`;
-  const edit = await requestJson(fetchImpl, `${baseUrl}/edits`, {
-    method: 'POST',
-    headers,
-  }, 'Google Play edit insert');
-  if (!edit.id) {
-    throw new Error('Google Play edit insert response did not include id');
+
+  for (let attempt = 1; attempt <= ANDROID_EDIT_MAX_ATTEMPTS; attempt += 1) {
+    const edit = await requestJson(fetchImpl, `${baseUrl}/edits`, {
+      method: 'POST',
+      headers,
+    }, 'Google Play edit insert');
+    if (!edit.id) {
+      throw new Error('Google Play edit insert response did not include id');
+    }
+    const editUrl = `${baseUrl}/edits/${encodeURIComponent(edit.id)}`;
+
+    try {
+      return await requestJson(fetchImpl, `${editUrl}/tracks`, {
+        method: 'GET',
+        headers,
+      }, 'Google Play tracks list');
+    } catch (error) {
+      if (!isDiscardedAndroidEdit(error) || attempt === ANDROID_EDIT_MAX_ATTEMPTS) {
+        throw error;
+      }
+      // 满抖动：避免并发 run 同步重试、再次互相顶掉。
+      const delayMs = ANDROID_EDIT_RETRY_BASE_MS * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+      logger.warn(`[store-build-number] Google Play edit ${edit.id} was discarded by a concurrent run; retrying in ${delayMs}ms (attempt ${attempt + 1}/${ANDROID_EDIT_MAX_ATTEMPTS})`);
+      await sleep(delayMs);
+    } finally {
+      await fetchImpl(editUrl, {
+        method: 'DELETE',
+        headers,
+      }).catch(() => {});
+    }
   }
 
-  try {
-    return await requestJson(fetchImpl, `${baseUrl}/edits/${encodeURIComponent(edit.id)}/tracks`, {
-      method: 'GET',
-      headers,
-    }, 'Google Play tracks list');
-  } finally {
-    await fetchImpl(`${baseUrl}/edits/${encodeURIComponent(edit.id)}`, {
-      method: 'DELETE',
-      headers,
-    }).catch(() => {});
-  }
+  throw new Error('Google Play tracks list did not complete');
 }
 
 function createAppStoreConnectJwt(env) {
@@ -247,7 +273,7 @@ export async function resolveStoreBuildNumber({
   if (platform === 'android') {
     const payload = env.STORE_ANDROID_TRACKS_JSON
       ? parseJson(env.STORE_ANDROID_TRACKS_JSON, 'STORE_ANDROID_TRACKS_JSON')
-      : await fetchAndroidTracks(fetchImpl, env);
+      : await fetchAndroidTracks(fetchImpl, env, logger);
     return String(maxAndroidVersionCodeFromTracks(payload) + 1 + offset);
   }
 
